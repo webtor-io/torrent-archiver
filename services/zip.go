@@ -21,16 +21,17 @@ type Zip struct {
 	path     string
 	baseURL  string
 	token    string
+	apiKey   string
 }
 
-func NewZip(ts *TorrentStore, infoHash string, path string, baseURL string, token string) *Zip {
-	return &Zip{ts: ts, infoHash: infoHash, path: path, baseURL: baseURL, token: token}
+func NewZip(ts *TorrentStore, infoHash string, path string, baseURL string, token string, apiKey string) *Zip {
+	return &Zip{ts: ts, infoHash: infoHash, path: path, baseURL: baseURL, token: token, apiKey: apiKey}
 }
 
 func (s *Zip) writeFile(w io.Writer, zw *zip.Writer, info *metainfo.Info, f *metainfo.FileInfo) error {
 	p := "/" + url.QueryEscape(strings.Join(s.getPath(info, f), "/"))
 	log.Infof("Adding file=%s", p)
-	url := s.baseURL + "/" + s.infoHash + p + "?download=true&token=" + s.token
+	url := s.baseURL + "/" + s.infoHash + p + "?download=true&token=" + s.token + "&api-key=" + s.apiKey
 	res, err := http.Get(url)
 	if err != nil {
 		return err

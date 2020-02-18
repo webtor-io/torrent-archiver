@@ -60,17 +60,22 @@ func (s *Web) Serve() error {
 			return
 		}
 		token := r.Header.Get("X-Token")
-		if token == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
+		// if token == "" {
+		// 	w.WriteHeader(http.StatusBadRequest)
+		// 	return
+		// }
+		apiKey := r.Header.Get("X-Api-Key")
+		// if apiKey == "" {
+		// 	w.WriteHeader(http.StatusBadRequest)
+		// 	return
+		// }
 		baseURL := r.Header.Get("X-Proxy-Url")
 		if baseURL == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		log.Infof("Got request with infoHash=%s path=%s", infoHash, path)
-		z := NewZip(s.cl, infoHash, path, baseURL, token)
+		z := NewZip(s.cl, infoHash, path, baseURL, token, apiKey)
 
 		name := filepath.Base(r.URL.Path)
 		log.Infof("Making archive with name=%s", name)
