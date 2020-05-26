@@ -1,6 +1,6 @@
 module github.com/webtor-io/torrent-archiver
 
-go 1.13
+go 1.14
 
 require (
 	github.com/anacrolix/torrent v0.0.0-20181129073333-cc531b8c4a80

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -22,16 +21,17 @@ type Zip struct {
 	baseURL  string
 	token    string
 	apiKey   string
+	suffix   string
 }
 
-func NewZip(ts *TorrentStore, infoHash string, path string, baseURL string, token string, apiKey string) *Zip {
-	return &Zip{ts: ts, infoHash: infoHash, path: path, baseURL: baseURL, token: token, apiKey: apiKey}
+func NewZip(ts *TorrentStore, infoHash string, path string, baseURL string, token string, apiKey string, suffix string) *Zip {
+	return &Zip{ts: ts, infoHash: infoHash, path: path, baseURL: baseURL, token: token, apiKey: apiKey, suffix: suffix}
 }
 
 func (s *Zip) writeFile(w io.Writer, zw *zip.Writer, info *metainfo.Info, f *metainfo.FileInfo) error {
-	p := "/" + url.QueryEscape(strings.Join(s.getPath(info, f), "/"))
-	log.Infof("Adding file=%s", p)
-	url := s.baseURL + "/" + s.infoHash + p + "?download=true&token=" + s.token + "&api-key=" + s.apiKey
+	p := "/" + strings.Join(s.getPath(info, f), "/")
+	url := s.baseURL + "/" + s.infoHash + p + s.suffix + "?download=true&token=" + s.token + "&api-key=" + s.apiKey
+	log.Infof("Adding file=%s url=%s", p, url)
 	res, err := http.Get(url)
 	if err != nil {
 		return err

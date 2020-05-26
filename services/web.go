@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
 
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
@@ -59,6 +60,13 @@ func (s *Web) Serve() error {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		sep := "~"
+		suffix := ""
+		parts := strings.SplitN(path, sep, 2)
+		if len(parts) == 2 {
+			suffix = sep + parts[1]
+			path = parts[0]
+		}
 		token := r.Header.Get("X-Token")
 		// if token == "" {
 		// 	w.WriteHeader(http.StatusBadRequest)
@@ -75,7 +83,7 @@ func (s *Web) Serve() error {
 			return
 		}
 		log.Infof("Got request with infoHash=%s path=%s", infoHash, path)
-		z := NewZip(s.cl, infoHash, path, baseURL, token, apiKey)
+		z := NewZip(s.cl, infoHash, path, baseURL, token, apiKey, suffix)
 
 		name := filepath.Base(r.URL.Path)
 		log.Infof("Making archive with name=%s", name)
