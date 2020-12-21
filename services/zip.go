@@ -1,11 +1,11 @@
 package services
 
 import (
-	"archive/zip"
-	"fmt"
+	"bytes"
 	"io"
-	"net/http"
 	"strings"
+
+	"github.com/webtor-io/torrent-archiver/zip"
 
 	"github.com/pkg/errors"
 
@@ -31,25 +31,12 @@ func NewZip(ts *TorrentStore, infoHash string, path string, baseURL string, toke
 func (s *Zip) writeFile(w io.Writer, zw *zip.Writer, info *metainfo.Info, f *metainfo.FileInfo) error {
 	p := "/" + strings.Join(s.getPath(info, f), "/")
 	url := s.baseURL + "/" + s.infoHash + p + s.suffix + "?download=true&token=" + s.token + "&api-key=" + s.apiKey
-	log.Infof("Adding file=%s url=%s", p, url)
-	res, err := http.Get(url)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		return errors.New(fmt.Sprintf("Bad status code %d", res.StatusCode))
-	}
-	// fw, err := zw.Create(strings.Join(s.getPath(info, f), "/"))
-
-	fw, err := zw.CreateHeader(&zip.FileHeader{
+	// log.Infof("Adding file=%s url=%s", p, url)
+	_, err := zw.CreateHeader(&zip.FileHeader{
 		Name:   (strings.Join(s.getPath(info, f), "/")),
-		Method: zip.Store,
+		URL:    url,
+		Length: f.Length,
 	})
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(fw, res.Body)
 	if err != nil {
 		return err
 	}
@@ -64,7 +51,38 @@ func (s *Zip) getPath(info *metainfo.Info, f *metainfo.FileInfo) []string {
 	return res
 }
 
-func (s *Zip) Write(w io.Writer) error {
+func (s *Zip) Size() (size int64, err error) {
+	mi, err := s.ts.Get(s.infoHash)
+	if err != nil {
+		return
+	}
+	info, err := mi.UnmarshalInfo()
+	if err != nil {
+		return
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf, 0, -1, nil)
+	for _, f := range info.UpvertedFiles() {
+		p := "/" + strings.Join(s.getPath(&info, &f), "/")
+		_, cerr := zw.CreateHeader(&zip.FileHeader{
+			Name:   p,
+			Method: zip.Store,
+		})
+		if cerr != nil {
+			err = cerr
+			zw.Close()
+			return
+		}
+		if strings.HasPrefix("/"+p, s.path) {
+			size += f.Length - 2 // "-2" was find by doing some tests, there is some unknown magic
+		}
+	}
+	zw.Close()
+	size += int64(buf.Len())
+	return
+}
+
+func (s *Zip) Write(w io.Writer, start int64, end int64) error {
 	mi, err := s.ts.Get(s.infoHash)
 	if err != nil {
 		return err
@@ -73,7 +91,7 @@ func (s *Zip) Write(w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	zw := zip.NewWriter(w)
+	zw := zip.NewWriter(w, start, end, nil)
 	defer zw.Close()
 	log.Infof("Start building archive for path=%s infoHash=%s", s.path, s.infoHash)
 	log.Info(s.path)

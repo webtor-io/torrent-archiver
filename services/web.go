@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -85,13 +86,51 @@ func (s *Web) Serve() error {
 		log.Infof("Got request with infoHash=%s path=%s", infoHash, path)
 		z := NewZip(s.cl, infoHash, path, baseURL, token, apiKey, suffix)
 
+		size, err := z.Size()
+
+		if err != nil {
+			log.WithError(err).Error("Failed to get zip size")
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
 		name := filepath.Base(r.URL.Path)
 		log.Infof("Making archive with name=%s", name)
 
+		rng := r.Header.Get("Range")
+		begin := 0
+		end := -1
+		clen := size
+		if rng != "" {
+			parts := strings.Split(strings.TrimPrefix(rng, "bytes="), "-")
+			if parts[1] != "" {
+				end, err = strconv.Atoi(parts[1])
+				if err != nil {
+					log.WithError(err).Errorf("Failed to parse range %s", rng)
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+			}
+			begin, err = strconv.Atoi(parts[0])
+			if err != nil {
+				log.WithError(err).Errorf("Failed to parse range %s", rng)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			clen = int64(end - begin + 1)
+		}
+
 		w.Header().Set("Content-Type", "application/zip")
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", name))
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Content-Length", fmt.Sprintf("%v", clen))
 
-		err := z.Write(w)
+		if rng != "" {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %v/%v", rng, size))
+			w.WriteHeader(http.StatusPartialContent)
+		}
+
+		err = z.Write(w, int64(begin), int64(end))
 		if err != nil {
 			log.WithError(err).Error("Failed to write zip")
 			w.WriteHeader(http.StatusInternalServerError)
