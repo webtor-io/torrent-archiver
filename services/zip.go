@@ -64,16 +64,16 @@ func (s *Zip) Size() (size int64, err error) {
 	zw := zip.NewWriter(&buf, 0, -1, nil)
 	for _, f := range info.UpvertedFiles() {
 		p := "/" + strings.Join(s.getPath(&info, &f), "/")
-		_, cerr := zw.CreateHeader(&zip.FileHeader{
-			Name:   p,
-			Method: zip.Store,
-		})
-		if cerr != nil {
-			err = cerr
-			zw.Close()
-			return
-		}
-		if strings.HasPrefix("/"+p, s.path) {
+		if strings.HasPrefix(p, s.path) {
+			_, cerr := zw.CreateHeader(&zip.FileHeader{
+				Name:   p,
+				Method: zip.Store,
+			})
+			if cerr != nil {
+				err = cerr
+				zw.Close()
+				return
+			}
 			size += f.Length - 2 // "-2" was find by doing some tests, there is some unknown magic
 		}
 	}

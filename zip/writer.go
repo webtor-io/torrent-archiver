@@ -428,7 +428,7 @@ func (w *Writer) writeFile(h *FileHeader, fw *fileWriter) error {
 	defer res.Body.Close()
 	_, err = io.Copy(fw, res.Body)
 	// n, err := io.Copy(fw, res.Body)
-	// fmt.Printf("Write content for file=%v begin=%v end=%v size=%v\n", h.Name, begin, end, n)
+	// fmt.Printf("Write content for file=%v len=%v url=%v begin=%v end=%v size=%v\n", h.Name, h.Length, h.URL, begin, end, n)
 	if err != nil {
 		return err
 	}
