@@ -3,7 +3,6 @@ package services
 import (
 	"bytes"
 	"io"
-	"os"
 	"strings"
 	"time"
 
@@ -71,10 +70,11 @@ func (s *Zip) Size() (size int64, err error) {
 		p := "/" + strings.Join(s.getPath(&info, &f), "/")
 		if strings.HasPrefix(p, s.path) {
 			header := &zip.FileHeader{
-				Name:   p,
-				Method: zip.Store,
+				Name:               p,
+				Method:             zip.Store,
+				UncompressedSize64: uint64(f.Length),
+				Modified:           time.Unix(mi.CreationDate, 0),
 			}
-			header.SetMode(os.FileMode(int(0644)))
 			_, cerr := zw.CreateHeader(header)
 			if cerr != nil {
 				err = cerr
