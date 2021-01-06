@@ -96,8 +96,6 @@ type FileHeader struct {
 
 	URL string
 
-	Length int64
-
 	Partial bool
 
 	// Comment is any arbitrary user-defined string shorter than 64KiB.

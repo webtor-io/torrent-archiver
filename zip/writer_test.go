@@ -40,9 +40,9 @@ func getBytes(s *httptest.Server, begin int64, end int64, data []string) []byte 
 	zw := zip.NewWriter(&buf, begin, end, s.Client())
 	for _, d := range data {
 		header := &zip.FileHeader{
-			Name:   d,
-			URL:    s.URL + "/" + d,
-			Length: int64(len(d)),
+			Name:               d,
+			URL:                s.URL + "/" + d,
+			UncompressedSize64: uint64(len(d)),
 		}
 		header.SetMode(os.FileMode(int(0644)))
 		zw.CreateHeader(header)

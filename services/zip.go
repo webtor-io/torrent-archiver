@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/webtor-io/torrent-archiver/zip"
 
@@ -29,17 +30,17 @@ func NewZip(ts *TorrentStore, infoHash string, path string, baseURL string, toke
 	return &Zip{ts: ts, infoHash: infoHash, path: path, baseURL: baseURL, token: token, apiKey: apiKey, suffix: suffix}
 }
 
-func (s *Zip) writeFile(w io.Writer, zw *zip.Writer, info *metainfo.Info, f *metainfo.FileInfo) error {
+func (s *Zip) writeFile(w io.Writer, zw *zip.Writer, info *metainfo.Info, f *metainfo.FileInfo, mi *metainfo.MetaInfo) error {
 	p := "/" + strings.Join(s.getPath(info, f), "/")
 	url := s.baseURL + "/" + s.infoHash + p + s.suffix + "?download=true&token=" + s.token + "&api-key=" + s.apiKey
 	// log.Infof("Adding file=%s url=%s", p, url)
-	header := &zip.FileHeader{
-		Name:   (strings.Join(s.getPath(info, f), "/")),
-		URL:    url,
-		Length: f.Length,
+	fh := &zip.FileHeader{
+		Name:               (strings.Join(s.getPath(info, f), "/")),
+		URL:                url,
+		UncompressedSize64: uint64(f.Length),
+		Modified:           time.Unix(mi.CreationDate, 0),
 	}
-	header.SetMode(os.FileMode(int(0644)))
-	_, err := zw.CreateHeader(header)
+	_, err := zw.CreateHeader(fh)
 	if err != nil {
 		return err
 	}
@@ -64,6 +65,7 @@ func (s *Zip) Size() (size int64, err error) {
 		return
 	}
 	var buf bytes.Buffer
+
 	zw := zip.NewWriter(&buf, 0, -1, nil)
 	for _, f := range info.UpvertedFiles() {
 		p := "/" + strings.Join(s.getPath(&info, &f), "/")
@@ -103,7 +105,7 @@ func (s *Zip) Write(w io.Writer, start int64, end int64) error {
 	for _, f := range info.UpvertedFiles() {
 		p := "/" + strings.Join(s.getPath(&info, &f), "/")
 		if strings.HasPrefix(p, s.path) {
-			err := s.writeFile(w, zw, &info, &f)
+			err := s.writeFile(w, zw, &info, &f, mi)
 			if err != nil {
 				errors.Wrapf(err, "Failed to write %s", p)
 			}

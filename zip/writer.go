@@ -14,6 +14,7 @@ import (
 	"hash/crc32"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"unicode/utf8"
 )
@@ -268,6 +269,20 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 		return nil, errors.New("archive/zip: invalid duplicate FileHeader")
 	}
 
+	fh.CompressedSize64 = fh.UncompressedSize64
+
+	if fh.UncompressedSize64 > uint32max {
+		fh.UncompressedSize = uint32max
+	} else {
+		fh.UncompressedSize = uint32(fh.UncompressedSize64)
+	}
+
+	if fh.CompressedSize64 > uint32max {
+		fh.CompressedSize = uint32max
+	} else {
+		fh.CompressedSize = uint32(fh.UncompressedSize64)
+	}
+
 	// The ZIP format has a sad state of affairs regarding character encoding.
 	// Officially, the name and comment fields are supposed to be encoded
 	// in CP-437 (which is mostly compatible with ASCII), unless the UTF-8
@@ -349,6 +364,8 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 
 		ow = dirWriter{}
 	} else {
+
+		fh.SetMode(os.FileMode(int(0644)))
 		// fh.Flags |= 0x8 // we will write a data descriptor
 		fh.Flags &^= 0x8 // we will not write a data descriptor
 
@@ -408,8 +425,8 @@ func (w *Writer) getRange(l int64) (partial bool, skip bool, begin int64, end in
 }
 
 func (w *Writer) writeFile(h *FileHeader, fw *fileWriter) error {
-	partial, skip, begin, end := w.getRange(h.Length)
-	w.current += h.Length
+	partial, skip, begin, end := w.getRange(int64(h.UncompressedSize64))
+	w.current += int64(h.UncompressedSize64)
 	h.Partial = partial
 	if skip {
 		return nil
@@ -547,8 +564,8 @@ func (w *fileWriter) close() error {
 	}
 	// fh.CompressedSize64 = uint64(w.compCount.count)
 	// fh.UncompressedSize64 = uint64(w.rawCount.count)
-	fh.CompressedSize64 = uint64(fh.Length)
-	fh.UncompressedSize64 = uint64(fh.Length)
+	// fh.CompressedSize64 = uint64(fh.Length)
+	// fh.UncompressedSize64 = uint64(fh.Length)
 
 	if fh.isZip64() {
 		fh.CompressedSize = uint32max
