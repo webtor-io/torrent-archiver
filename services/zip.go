@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/webtor-io/torrent-archiver/zip"
@@ -32,11 +33,13 @@ func (s *Zip) writeFile(w io.Writer, zw *zip.Writer, info *metainfo.Info, f *met
 	p := "/" + strings.Join(s.getPath(info, f), "/")
 	url := s.baseURL + "/" + s.infoHash + p + s.suffix + "?download=true&token=" + s.token + "&api-key=" + s.apiKey
 	// log.Infof("Adding file=%s url=%s", p, url)
-	_, err := zw.CreateHeader(&zip.FileHeader{
+	header := &zip.FileHeader{
 		Name:   (strings.Join(s.getPath(info, f), "/")),
 		URL:    url,
 		Length: f.Length,
-	})
+	}
+	header.SetMode(os.FileMode(int(0644)))
+	_, err := zw.CreateHeader(header)
 	if err != nil {
 		return err
 	}
@@ -65,10 +68,12 @@ func (s *Zip) Size() (size int64, err error) {
 	for _, f := range info.UpvertedFiles() {
 		p := "/" + strings.Join(s.getPath(&info, &f), "/")
 		if strings.HasPrefix(p, s.path) {
-			_, cerr := zw.CreateHeader(&zip.FileHeader{
+			header := &zip.FileHeader{
 				Name:   p,
 				Method: zip.Store,
-			})
+			}
+			header.SetMode(os.FileMode(int(0644)))
+			_, cerr := zw.CreateHeader(header)
 			if cerr != nil {
 				err = cerr
 				zw.Close()
