@@ -14,7 +14,6 @@ import (
 	"hash/crc32"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"unicode/utf8"
 )
@@ -245,20 +244,10 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 			return nil, err
 		}
 	}
+
 	if len(w.dir) > 0 && w.dir[len(w.dir)-1].FileHeader == fh {
 		// See https://golang.org/issue/11144 confusion.
 		return nil, errors.New("archive/zip: invalid duplicate FileHeader")
-	}
-
-	fh.CompressedSize64 = fh.UncompressedSize64
-
-	if fh.isZip64() {
-		fh.CompressedSize = uint32max
-		fh.UncompressedSize = uint32max
-		fh.ReaderVersion = zipVersion45 // requires 4.5 - File uses ZIP64 format extensions
-	} else {
-		fh.CompressedSize = uint32(fh.CompressedSize64)
-		fh.UncompressedSize = uint32(fh.UncompressedSize64)
 	}
 
 	// The ZIP format has a sad state of affairs regarding character encoding.
@@ -317,6 +306,24 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 		fh.Extra = append(fh.Extra, mbuf[:]...)
 	}
 
+	fh.CompressedSize64 = fh.UncompressedSize64
+
+	if fh.isZip64() {
+		fh.CompressedSize = uint32max
+		fh.UncompressedSize = uint32max
+		fh.ReaderVersion = zipVersion45 // requires 4.5 - File uses ZIP64 format extensions
+		var buf [28]byte                // 2x uint16 + 3x uint64
+		eb := writeBuf(buf[:])
+		eb.uint16(zip64ExtraID)
+		eb.uint16(24) // size = 3x uint64
+		eb.uint64(fh.UncompressedSize64)
+		eb.uint64(fh.CompressedSize64)
+		eb.uint64(uint64(w.current))
+	} else {
+		fh.CompressedSize = uint32(fh.CompressedSize64)
+		fh.UncompressedSize = uint32(fh.UncompressedSize64)
+	}
+
 	var (
 		ow io.Writer
 		fw *fileWriter
@@ -341,10 +348,9 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 		fh.UncompressedSize64 = 0
 
 		ow = dirWriter{}
-		fh.SetMode(os.FileMode(int(040755)))
+		// fh.SetMode(os.FileMode(int(040755)))
 	} else {
-
-		fh.SetMode(os.FileMode(int(0644)))
+		// fh.SetMode(os.FileMode(int(0644)))
 		// fh.Flags |= 0x8 // we will write a data descriptor
 		fh.Flags &^= 0x8 // we will not write a data descriptor
 
@@ -370,7 +376,7 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 		ow = fw
 	}
 	w.dir = append(w.dir, h)
-	if err := w.writeHeader(h); err != nil {
+	if err := w.writeHeader(fh); err != nil {
 		return nil, err
 	}
 	// If we're creating a directory, fw is nil.
@@ -430,7 +436,7 @@ func (w *Writer) writeFile(h *FileHeader, fw *fileWriter) error {
 	}
 	return nil
 }
-func (w *Writer) writeHeader(h *header) error {
+func (w *Writer) writeHeader(h *FileHeader) error {
 	bytes, err := getHeader(h)
 	if err != nil {
 		return err
@@ -447,7 +453,7 @@ func (w *Writer) writeHeader(h *header) error {
 	return err
 }
 
-func getHeader(h *header) ([]byte, error) {
+func getHeader(h *FileHeader) ([]byte, error) {
 	var w bytes.Buffer
 	const maxUint16 = 1<<16 - 1
 	if len(h.Name) > maxUint16 {
@@ -469,16 +475,6 @@ func getHeader(h *header) ([]byte, error) {
 	b.uint32(h.CompressedSize)   // compressed size,
 	b.uint32(h.UncompressedSize) // and uncompressed size should be zero
 
-	if h.isZip64() {
-		var buf [28]byte // 2x uint16 + 3x uint64
-		eb := writeBuf(buf[:])
-		eb.uint16(zip64ExtraID)
-		eb.uint16(24) // size = 3x uint64
-		eb.uint64(h.UncompressedSize64)
-		eb.uint64(h.CompressedSize64)
-		eb.uint64(h.offset)
-		h.Extra = append(h.Extra, buf[:]...)
-	}
 	b.uint16(uint16(len(h.Name)))
 	b.uint16(uint16(len(h.Extra)))
 	if _, err := w.Write(buf[:]); err != nil {
