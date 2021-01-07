@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"io"
+	"net/url"
 	"strings"
 	"time"
 
@@ -25,28 +26,70 @@ type Zip struct {
 	suffix   string
 }
 
+type folderWriter struct {
+	written []string
+}
+
+func newFolderWriter() *folderWriter {
+	return &folderWriter{written: []string{}}
+}
+
+func (s *folderWriter) write(zw *zip.Writer, info *metainfo.Info, f *metainfo.FileInfo, mi *metainfo.MetaInfo) error {
+	parts := getPath(info, f)
+	if len(parts) == 1 {
+		return nil
+	}
+	for i := 1; i < len(parts); i++ {
+		path := strings.Join(parts[:i], "/") + "/"
+		found := false
+		for _, wr := range s.written {
+			if wr == path {
+				found = true
+			}
+		}
+		if found {
+			continue
+		}
+		log.Infof("Adding folder=%s", path)
+		fh := &zip.FileHeader{
+			Name:     path,
+			Modified: time.Unix(mi.CreationDate, 0),
+		}
+		_, err := zw.CreateHeader(fh)
+		if err != nil {
+			return err
+		}
+		s.written = append(s.written, path)
+	}
+	return nil
+}
+
 func NewZip(ts *TorrentStore, infoHash string, path string, baseURL string, token string, apiKey string, suffix string) *Zip {
 	return &Zip{ts: ts, infoHash: infoHash, path: path, baseURL: baseURL, token: token, apiKey: apiKey, suffix: suffix}
 }
 
-func (s *Zip) writeFile(w io.Writer, zw *zip.Writer, info *metainfo.Info, f *metainfo.FileInfo, mi *metainfo.MetaInfo) error {
-	p := "/" + strings.Join(s.getPath(info, f), "/")
-	url := s.baseURL + "/" + s.infoHash + p + s.suffix + "?download=true&token=" + s.token + "&api-key=" + s.apiKey
-	// log.Infof("Adding file=%s url=%s", p, url)
+func (s *Zip) writeFile(zw *zip.Writer, info *metainfo.Info, f *metainfo.FileInfo, mi *metainfo.MetaInfo, fw *folderWriter) error {
+	path := strings.Join(getPath(info, f), "/")
+	err := fw.write(zw, info, f, mi)
+	if err != nil {
+		return err
+	}
+	url := s.baseURL + "/" + s.infoHash + "/" + url.PathEscape(path) + s.suffix + "?download=true&token=" + s.token + "&api-key=" + s.apiKey
+	log.Infof("Adding file=%s url=%s", path, url)
 	fh := &zip.FileHeader{
-		Name:               (strings.Join(s.getPath(info, f), "/")),
+		Name:               path,
 		URL:                url,
 		UncompressedSize64: uint64(f.Length),
 		Modified:           time.Unix(mi.CreationDate, 0),
 	}
-	_, err := zw.CreateHeader(fh)
+	_, err = zw.CreateHeader(fh)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (s *Zip) getPath(info *metainfo.Info, f *metainfo.FileInfo) []string {
+func getPath(info *metainfo.Info, f *metainfo.FileInfo) []string {
 	res := []string{info.Name}
 	if len(f.Path) > 0 {
 		res = append(res, f.Path...)
@@ -66,11 +109,16 @@ func (s *Zip) Size() (size int64, err error) {
 	var buf bytes.Buffer
 
 	zw := zip.NewWriter(&buf, 0, -1, nil)
+	fw := newFolderWriter()
 	for _, f := range info.UpvertedFiles() {
-		p := "/" + strings.Join(s.getPath(&info, &f), "/")
-		if strings.HasPrefix(p, s.path) {
+		path := strings.Join(getPath(&info, &f), "/")
+		if strings.HasPrefix(path, s.path) {
+			err = fw.write(zw, &info, &f, mi)
+			if err != nil {
+				return 0, err
+			}
 			header := &zip.FileHeader{
-				Name:               p,
+				Name:               path,
 				Method:             zip.Store,
 				UncompressedSize64: uint64(f.Length),
 				Modified:           time.Unix(mi.CreationDate, 0),
@@ -81,7 +129,8 @@ func (s *Zip) Size() (size int64, err error) {
 				zw.Close()
 				return
 			}
-			size += f.Length - 2 // "-2" was find by doing some tests, there is some unknown magic
+
+			size += f.Length
 		}
 	}
 	zw.Close()
@@ -102,12 +151,13 @@ func (s *Zip) Write(w io.Writer, start int64, end int64) error {
 	defer zw.Close()
 	log.Infof("Start building archive for path=%s infoHash=%s", s.path, s.infoHash)
 	log.Info(s.path)
+	fw := newFolderWriter()
 	for _, f := range info.UpvertedFiles() {
-		p := "/" + strings.Join(s.getPath(&info, &f), "/")
-		if strings.HasPrefix(p, s.path) {
-			err := s.writeFile(w, zw, &info, &f, mi)
+		path := strings.Join(getPath(&info, &f), "/")
+		if strings.HasPrefix(path, s.path) {
+			err := s.writeFile(zw, &info, &f, mi, fw)
 			if err != nil {
-				errors.Wrapf(err, "Failed to write %s", p)
+				return errors.Wrapf(err, "Failed to write %s", path)
 			}
 		}
 	}

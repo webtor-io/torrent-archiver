@@ -68,6 +68,7 @@ func (s *Web) Serve() error {
 			suffix = sep + parts[1]
 			path = parts[0]
 		}
+		path = strings.TrimLeft(path, "/")
 		token := r.Header.Get("X-Token")
 		// if token == "" {
 		// 	w.WriteHeader(http.StatusBadRequest)
@@ -124,6 +125,7 @@ func (s *Web) Serve() error {
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", name))
 		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("Content-Length", fmt.Sprintf("%v", clen))
+		// log.Info(clen)
 
 		if rng != "" {
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %v/%v", rng, size))
