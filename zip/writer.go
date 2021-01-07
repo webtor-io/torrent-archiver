@@ -14,6 +14,7 @@ import (
 	"hash/crc32"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"unicode/utf8"
 )
@@ -340,10 +341,10 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 		fh.UncompressedSize64 = 0
 
 		ow = dirWriter{}
-		// fh.SetMode(os.FileMode(int(040755)))
+		fh.SetMode(os.FileMode(int(040755)))
 	} else {
 
-		// fh.SetMode(os.FileMode(int(0644)))
+		fh.SetMode(os.FileMode(int(0644)))
 		// fh.Flags |= 0x8 // we will write a data descriptor
 		fh.Flags &^= 0x8 // we will not write a data descriptor
 
