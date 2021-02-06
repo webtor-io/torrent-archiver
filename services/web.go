@@ -131,6 +131,9 @@ func (s *Web) Serve() error {
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %v/%v", rng, size))
 			w.WriteHeader(http.StatusPartialContent)
 		}
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
 
 		err = z.Write(w, int64(begin), int64(end))
 		if err != nil {
