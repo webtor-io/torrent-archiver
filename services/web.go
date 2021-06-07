@@ -56,17 +56,14 @@ func (s *Web) Serve() error {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		path := r.Header.Get("X-Path")
+		path := r.Header.Get("X-Origin-Path")
 		if path == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		sep := "~"
 		suffix := ""
-		parts := strings.SplitN(path, sep, 2)
-		if len(parts) == 2 {
-			suffix = sep + parts[1]
-			path = parts[0]
+		if strings.Contains(r.Header.Get("X-Path"), "~tc") {
+			suffix = "~tc"
 		}
 		path = strings.TrimLeft(path, "/")
 		token := r.Header.Get("X-Token")
