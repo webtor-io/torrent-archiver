@@ -97,7 +97,7 @@ func (s *Web) Serve() error {
 
 		rng := r.Header.Get("Range")
 		begin := 0
-		end := -1
+		end := int(size - 1)
 		clen := size
 		if rng != "" {
 			parts := strings.Split(strings.TrimPrefix(rng, "bytes="), "-")
@@ -125,7 +125,7 @@ func (s *Web) Serve() error {
 		// log.Info(clen)
 
 		if rng != "" {
-			w.Header().Set("Content-Range", fmt.Sprintf("bytes %v/%v", rng, size))
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %v-%v/%v", begin, end, size))
 			w.WriteHeader(http.StatusPartialContent)
 		}
 		if f, ok := w.(http.Flusher); ok {
