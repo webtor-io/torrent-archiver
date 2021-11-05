@@ -124,9 +124,8 @@ func (s *Web) Serve() error {
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", name))
 		w.Header().Set("Accept-Ranges", "bytes")
 		w.Header().Set("Content-Length", fmt.Sprintf("%v", clen))
-		w.Header().Set("ETag", fmt.Sprintf("%x", sha1.Sum([]byte(infoHash+path))))
+		w.Header().Set("Etag", fmt.Sprintf("\"%x\"", sha1.Sum([]byte(infoHash+path))))
 		w.Header().Set("Last-Modified", time.Unix(0, 0).Format(http.TimeFormat))
-		// log.Info(clen)
 
 		if rng != "" {
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %v-%v/%v", begin, end, size))
