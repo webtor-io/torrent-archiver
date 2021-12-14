@@ -8,12 +8,13 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/pkg/errors"
 )
 
 var (
@@ -395,6 +396,9 @@ func (w *Writer) writeFile(h *FileHeader, fw io.Writer) error {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", begin, end-1))
 	}
 	res, err := w.cl.Do(req)
+	if res.StatusCode >= 300 {
+		return errors.Errorf("got bad http code from url=%v code=%v", h.URL, res.StatusCode)
+	}
 	if err != nil {
 		return err
 	}
