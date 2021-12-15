@@ -9,6 +9,8 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"hash"
+	"hash/crc32"
 	"io"
 	"net/http"
 	"strings"
@@ -90,8 +92,26 @@ func (w *Writer) getEnding() ([]byte, error) {
 		b.uint16(h.ModifiedTime)
 		b.uint16(h.ModifiedDate)
 		b.uint32(h.CRC32)
-		b.uint32(h.CompressedSize)
-		b.uint32(h.UncompressedSize)
+		if h.isZip64() || h.offset >= uint32max {
+			// the file needs a zip64 header. store maxint in both
+			// 32 bit size fields (and offset later) to signal that the
+			// zip64 extra header should be used.
+			b.uint32(uint32max) // compressed size
+			b.uint32(uint32max) // uncompressed size
+
+			// append a zip64 extra block to Extra
+			var buf [28]byte // 2x uint16 + 3x uint64
+			eb := writeBuf(buf[:])
+			eb.uint16(zip64ExtraID)
+			eb.uint16(24) // size = 3x uint64
+			eb.uint64(h.UncompressedSize64)
+			eb.uint64(h.CompressedSize64)
+			eb.uint64(h.offset)
+			h.Extra = append(h.Extra, buf[:]...)
+		} else {
+			b.uint32(h.CompressedSize)
+			b.uint32(h.UncompressedSize)
+		}
 		b.uint16(uint16(len(h.Name)))
 		b.uint16(uint16(len(h.Extra)))
 		b.uint16(uint16(len(h.Comment)))
@@ -196,6 +216,9 @@ func (w *Writer) Close() error {
 		return w.w.Flush()
 	}
 	_, err = w.w.Write(bytes[begin:end])
+	if err != nil {
+		return err
+	}
 
 	return w.w.Flush()
 }
@@ -230,10 +253,10 @@ func detectUTF8(s string) (valid, require bool) {
 // This returns a Writer to which the file contents should be written.
 // The file's contents must be written to the io.Writer before the next
 // call to Create, CreateHeader, or Close.
-func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
+func (w *Writer) CreateHeader(fh *FileHeader) error {
 	if len(w.dir) > 0 && w.dir[len(w.dir)-1].FileHeader == fh {
 		// See https://golang.org/issue/11144 confusion.
-		return nil, errors.New("archive/zip: invalid duplicate FileHeader")
+		return errors.New("archive/zip: invalid duplicate FileHeader")
 	}
 
 	// The ZIP format has a sad state of affairs regarding character encoding.
@@ -298,20 +321,12 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 		fh.CompressedSize = uint32max
 		fh.UncompressedSize = uint32max
 		fh.ReaderVersion = zipVersion45 // requires 4.5 - File uses ZIP64 format extensions
-		var buf [28]byte                // 2x uint16 + 3x uint64
-		eb := writeBuf(buf[:])
-		eb.uint16(zip64ExtraID)
-		eb.uint16(24) // size = 3x uint64
-		eb.uint64(fh.UncompressedSize64)
-		eb.uint64(fh.CompressedSize64)
-		eb.uint64(uint64(w.current))
 	} else {
 		fh.CompressedSize = uint32(fh.CompressedSize64)
 		fh.UncompressedSize = uint32(fh.UncompressedSize64)
 	}
 
 	var (
-		ow io.Writer
 		fw io.Writer
 	)
 	h := &header{
@@ -320,9 +335,11 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 	}
 
 	fh.Method = Store
-	fh.Flags &^= 0x8 // we will not write a data descriptor
 
 	if strings.HasSuffix(fh.Name, "/") {
+
+		fh.Flags &^= 0x8 // we will not write a data descriptor
+
 		// Set the compression method to Store to ensure data length is truly zero,
 		// which the writeHeader method always encodes for the size fields.
 		// This is necessary as most compression formats have non-zero lengths
@@ -333,34 +350,44 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 		fh.CompressedSize64 = 0
 		fh.UncompressedSize = 0
 		fh.UncompressedSize64 = 0
-
-		ow = dirWriter{}
 	} else {
+
+		fh.Flags |= 0x8 // we will write a data descriptor
 
 		comp := w.compressor(fh.Method)
 		if comp == nil {
-			return nil, errAlgorithm
+			return errAlgorithm
 		}
 		var err error
 		fw, err = comp(w.w)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		ow = fw
 	}
 	w.dir = append(w.dir, h)
 	if err := w.writeHeader(fh); err != nil {
-		return nil, err
+		return err
 	}
 	// If we're creating a directory, fw is nil.
 	if h.URL != "" {
-		err := w.writeFile(fh, fw)
-		if err != nil {
-			return nil, err
+		cw := &crcWriter{
+			w:     fw,
+			crc32: crc32.NewIEEE(),
 		}
-		return nil, nil
+		err := w.writeFile(fh, cw)
+		if err != nil {
+			return err
+		}
+		h.CRC32 = cw.crc32.Sum32()
 	}
-	return ow, nil
+	w.current += int64(h.UncompressedSize64)
+	if fh.hasDataDescriptor() {
+		err := w.writeDescriptor(fh, fw)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (w *Writer) getRange(l int64) (partial bool, skip bool, begin int64, end int64) {
@@ -381,10 +408,63 @@ func (w *Writer) getRange(l int64) (partial bool, skip bool, begin int64, end in
 	return
 }
 
+func (w *Writer) getDescriptor(h *FileHeader) ([]byte, error) {
+	var wb bytes.Buffer
+	// Write data descriptor. This is more complicated than one would
+	// think, see e.g. comments in zipfile.c:putextended() and
+	// http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=7073588.
+	// The approach here is to write 8 byte sizes if needed without
+	// adding a zip64 extra in the local header (too late anyway).
+	var buf []byte
+	if h.isZip64() {
+		buf = make([]byte, dataDescriptor64Len)
+	} else {
+		buf = make([]byte, dataDescriptorLen)
+	}
+	b := writeBuf(buf)
+	b.uint32(dataDescriptorSignature) // de-facto standard, required by OS X
+	b.uint32(0)
+	if h.isZip64() {
+		b.uint64(h.CompressedSize64)
+		b.uint64(h.UncompressedSize64)
+	} else {
+		b.uint32(h.CompressedSize)
+		b.uint32(h.UncompressedSize)
+	}
+	_, err := wb.Write(buf)
+	if err != nil {
+		return nil, err
+	}
+	return wb.Bytes(), nil
+}
+
+func (w *Writer) writeDescriptor(h *FileHeader, fw io.Writer) error {
+	bytes, err := w.getDescriptor(h)
+	if err != nil {
+		return err
+	}
+	bl := int64(len(bytes))
+	_, skip, begin, end := w.getRange(bl)
+	w.current += bl
+	if skip {
+		return nil
+	}
+	_, err = w.w.Write(bytes[begin:end])
+	return err
+}
+
+type crcWriter struct {
+	w     io.Writer
+	crc32 hash.Hash32
+}
+
+func (w *crcWriter) Write(p []byte) (int, error) {
+	w.crc32.Write(p)
+	return w.w.Write(p)
+}
+
 func (w *Writer) writeFile(h *FileHeader, fw io.Writer) error {
 	partial, skip, begin, end := w.getRange(int64(h.UncompressedSize64))
-	w.current += int64(h.UncompressedSize64)
-	h.Partial = partial
 	if skip {
 		return nil
 	}
@@ -412,7 +492,7 @@ func (w *Writer) writeFile(h *FileHeader, fw io.Writer) error {
 	return nil
 }
 func (w *Writer) writeHeader(h *FileHeader) error {
-	bytes, err := getHeader(h)
+	bytes, err := w.getHeader(h)
 	if err != nil {
 		return err
 	}
@@ -428,8 +508,8 @@ func (w *Writer) writeHeader(h *FileHeader) error {
 	return err
 }
 
-func getHeader(h *FileHeader) ([]byte, error) {
-	var w bytes.Buffer
+func (w *Writer) getHeader(h *FileHeader) ([]byte, error) {
+	var wb bytes.Buffer
 	const maxUint16 = 1<<16 - 1
 	if len(h.Name) > maxUint16 {
 		return nil, errLongName
@@ -446,22 +526,23 @@ func getHeader(h *FileHeader) ([]byte, error) {
 	b.uint16(h.Method)
 	b.uint16(h.ModifiedTime)
 	b.uint16(h.ModifiedDate)
-	b.uint32(0)                  // since we are writing a data descriptor crc32,
-	b.uint32(h.CompressedSize)   // compressed size,
-	b.uint32(h.UncompressedSize) // and uncompressed size should be zero
+	// since we are writing a data descriptor crc32,
+	b.uint32(0)
+	b.uint32(0)
+	b.uint32(0)
 
 	b.uint16(uint16(len(h.Name)))
 	b.uint16(uint16(len(h.Extra)))
-	if _, err := w.Write(buf[:]); err != nil {
+	if _, err := wb.Write(buf[:]); err != nil {
 		return nil, err
 	}
-	if _, err := io.WriteString(&w, h.Name); err != nil {
+	if _, err := io.WriteString(&wb, h.Name); err != nil {
 		return nil, err
 	}
-	if _, err := w.Write(h.Extra); err != nil {
+	if _, err := wb.Write(h.Extra); err != nil {
 		return nil, err
 	}
-	return w.Bytes(), nil
+	return wb.Bytes(), nil
 }
 
 // RegisterCompressor registers or overrides a custom compressor for a specific

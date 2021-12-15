@@ -59,7 +59,7 @@ func (s *folderWriter) write(zw *zip.Writer, info *metainfo.Info, f *metainfo.Fi
 			Name:     path + "/",
 			Modified: time.Unix(mi.CreationDate, 0),
 		}
-		_, err := zw.CreateHeader(fh)
+		err := zw.CreateHeader(fh)
 		if err != nil {
 			return err
 		}
@@ -86,7 +86,7 @@ func (s *Zip) writeFile(zw *zip.Writer, info *metainfo.Info, f *metainfo.FileInf
 		UncompressedSize64: uint64(f.Length),
 		Modified:           time.Unix(mi.CreationDate, 0),
 	}
-	_, err = zw.CreateHeader(fh)
+	err = zw.CreateHeader(fh)
 	if err != nil {
 		return err
 	}
@@ -127,7 +127,7 @@ func (s *Zip) Size() (size int64, err error) {
 				UncompressedSize64: uint64(f.Length),
 				Modified:           time.Unix(mi.CreationDate, 0),
 			}
-			_, cerr := zw.CreateHeader(header)
+			cerr := zw.CreateHeader(header)
 			if cerr != nil {
 				err = cerr
 				zw.Close()

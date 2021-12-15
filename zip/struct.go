@@ -96,8 +96,6 @@ type FileHeader struct {
 
 	URL string
 
-	Partial bool
-
 	// Comment is any arbitrary user-defined string shorter than 64KiB.
 	Comment string
 
@@ -314,6 +312,10 @@ func (h *FileHeader) SetMode(mode os.FileMode) {
 // isZip64 reports whether the file size exceeds the 32 bit limit
 func (h *FileHeader) isZip64() bool {
 	return h.CompressedSize64 >= uint32max || h.UncompressedSize64 >= uint32max
+}
+
+func (f *FileHeader) hasDataDescriptor() bool {
+	return f.Flags&0x8 != 0
 }
 
 func msdosModeToFileMode(m uint32) (mode os.FileMode) {
