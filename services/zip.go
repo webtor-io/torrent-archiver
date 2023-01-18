@@ -69,7 +69,15 @@ func (s *folderWriter) write(zw *zip.Writer, info *metainfo.Info, f *metainfo.Fi
 }
 
 func NewZip(ts *TorrentStore, infoHash string, path string, baseURL string, token string, apiKey string, suffix string) *Zip {
-	return &Zip{ts: ts, infoHash: infoHash, path: path, baseURL: baseURL, token: token, apiKey: apiKey, suffix: suffix}
+	return &Zip{
+		ts:       ts,
+		infoHash: infoHash,
+		path:     path,
+		baseURL:  baseURL,
+		token:    token,
+		apiKey:   apiKey,
+		suffix:   suffix,
+	}
 }
 
 func (s *Zip) writeFile(zw *zip.Writer, info *metainfo.Info, f *metainfo.FileInfo, mi *metainfo.MetaInfo, fw *folderWriter) error {
@@ -153,7 +161,7 @@ func (s *Zip) Write(w io.Writer, start int64, end int64) error {
 	}
 	zw := zip.NewWriter(w, start, end, nil)
 	defer zw.Close()
-	log.Infof("Start building archive for path=%s infoHash=%s", s.path, s.infoHash)
+	log.Infof("start building archive for path=%s infoHash=%s", s.path, s.infoHash)
 	log.Info(s.path)
 	fw := newFolderWriter(s.path)
 	for _, f := range info.UpvertedFiles() {
@@ -161,10 +169,10 @@ func (s *Zip) Write(w io.Writer, start int64, end int64) error {
 		if strings.HasPrefix(path, s.path) {
 			err := s.writeFile(zw, &info, &f, mi, fw)
 			if err != nil {
-				return errors.Wrapf(err, "Failed to write %s", path)
+				return errors.Wrapf(err, "failed to write %s", path)
 			}
 		}
 	}
-	log.Infof("Finish building archive for path=%s infoHash=%s", s.path, s.infoHash)
+	log.Infof("finish building archive for path=%s infoHash=%s", s.path, s.infoHash)
 	return nil
 }

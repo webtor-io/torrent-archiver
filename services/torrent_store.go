@@ -12,7 +12,9 @@ type TorrentStore struct {
 }
 
 func NewTorrentStore(cl *TorrentStoreClient) *TorrentStore {
-	return &TorrentStore{cl: cl}
+	return &TorrentStore{
+		cl: cl,
+	}
 }
 
 func (s *TorrentStore) Get(infoHash string) (*metainfo.MetaInfo, error) {

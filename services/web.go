@@ -23,32 +23,38 @@ type Web struct {
 }
 
 const (
-	WEB_HOST_FLAG = "host"
-	WEB_PORT_FLAG = "port"
+	webHostFlag = "host"
+	webPortFlag = "port"
 )
 
 func NewWeb(c *cli.Context, cl *TorrentStore) *Web {
-	return &Web{host: c.String(WEB_HOST_FLAG), port: c.Int(WEB_PORT_FLAG), cl: cl}
+	return &Web{
+		host: c.String(webHostFlag),
+		port: c.Int(webPortFlag),
+		cl:   cl,
+	}
 }
 
-func RegisterWebFlags(c *cli.App) {
-	c.Flags = append(c.Flags, cli.StringFlag{
-		Name:  WEB_HOST_FLAG,
-		Usage: "listening host",
-		Value: "",
-	})
-	c.Flags = append(c.Flags, cli.IntFlag{
-		Name:  WEB_PORT_FLAG,
-		Usage: "http listening port",
-		Value: 8080,
-	})
+func RegisterWebFlags(f []cli.Flag) []cli.Flag {
+	return append(f,
+		cli.StringFlag{
+			Name:  webHostFlag,
+			Usage: "listening host",
+			Value: "",
+		},
+		cli.IntFlag{
+			Name:  webPortFlag,
+			Usage: "http listening port",
+			Value: 8080,
+		},
+	)
 }
 
 func (s *Web) Serve() error {
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return errors.Wrap(err, "Failed to web listen to tcp connection")
+		return errors.Wrap(err, "failed to web listen to tcp connection")
 	}
 	s.ln = ln
 	mux := http.NewServeMux()
@@ -83,13 +89,13 @@ func (s *Web) Serve() error {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		log.Infof("Got request with infoHash=%s path=%s", infoHash, path)
+		log.Infof("got request with infoHash=%s path=%s", infoHash, path)
 		z := NewZip(s.cl, infoHash, path, baseURL, token, apiKey, suffix)
 
 		size, err := z.Size()
 
 		if err != nil {
-			log.WithError(err).Error("Failed to get zip size")
+			log.WithError(err).Error("failed to get zip size")
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -106,14 +112,14 @@ func (s *Web) Serve() error {
 			if parts[1] != "" {
 				end, err = strconv.Atoi(parts[1])
 				if err != nil {
-					log.WithError(err).Errorf("Failed to parse range %s", rng)
+					log.WithError(err).Errorf("failed to parse range %s", rng)
 					w.WriteHeader(http.StatusInternalServerError)
 					return
 				}
 			}
 			begin, err = strconv.Atoi(parts[0])
 			if err != nil {
-				log.WithError(err).Errorf("Failed to parse range %s", rng)
+				log.WithError(err).Errorf("failed to parse range %s", rng)
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
@@ -137,7 +143,7 @@ func (s *Web) Serve() error {
 
 		err = z.Write(w, int64(begin), int64(end))
 		if err != nil {
-			log.WithError(err).Error("Failed to write zip")
+			log.WithError(err).Error("failed to write zip")
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}

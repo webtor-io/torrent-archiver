@@ -9,9 +9,10 @@ import (
 
 func configure(app *cli.App) {
 	app.Flags = []cli.Flag{}
-	cs.RegisterProbeFlags(app)
-	s.RegisterWebFlags(app)
-	s.RegisterTorrentStoreClientFlags(app)
+	app.Flags = cs.RegisterProbeFlags(app.Flags)
+	app.Flags = cs.RegisterPprofFlags(app.Flags)
+	app.Flags = s.RegisterWebFlags(app.Flags)
+	app.Flags = s.RegisterTorrentStoreClientFlags(app.Flags)
 	app.Action = run
 }
 
@@ -19,6 +20,10 @@ func run(c *cli.Context) error {
 	// Setting ProbeService
 	probe := cs.NewProbe(c)
 	defer probe.Close()
+
+	// Setting PprofService
+	pprof := cs.NewPprof(c)
+	defer pprof.Close()
 
 	// Setting TorrentStoreCLient
 	torrentStoreClient := s.NewTorrentStoreClient(c)
@@ -32,7 +37,7 @@ func run(c *cli.Context) error {
 	defer web.Close()
 
 	// Setting ServeService
-	serve := cs.NewServe(probe, web)
+	serve := cs.NewServe(probe, pprof, web)
 
 	// And SERVE!
 	err := serve.Serve()

@@ -17,6 +17,6 @@ func main() {
 	configure(app)
 	err := app.Run(os.Args)
 	if err != nil {
-		log.WithError(err).Fatal("Failed to serve application")
+		log.WithError(err).Fatal("failed to serve application")
 	}
 }

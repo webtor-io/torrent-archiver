@@ -9,7 +9,7 @@ import (
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
-	ts "github.com/webtor-io/torrent-store/torrent-store"
+	ts "github.com/webtor-io/torrent-store/proto"
 )
 
 type MetaInfo struct {
@@ -22,7 +22,10 @@ type MetaInfo struct {
 }
 
 func NewMetaInfo(cl *TorrentStoreClient, infohash string) *MetaInfo {
-	return &MetaInfo{cl: cl, infoHash: infohash, inited: false}
+	return &MetaInfo{
+		cl:       cl,
+		infoHash: infohash,
+	}
 }
 
 func (s *MetaInfo) Get() (*metainfo.MetaInfo, error) {
@@ -37,22 +40,22 @@ func (s *MetaInfo) Get() (*metainfo.MetaInfo, error) {
 }
 
 func (s *MetaInfo) get() (*metainfo.MetaInfo, error) {
-	log.Info("Initializing MetaInfo")
+	log.Info("initializing MetaInfo")
 	c, err := s.cl.Get()
 	if err != nil {
-		return nil, errors.Wrap(err, "Failed to get torrent store client")
+		return nil, errors.Wrap(err, "failed to get torrent store client")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	r, err := c.Pull(ctx, &ts.PullRequest{InfoHash: s.infoHash})
 	if err != nil {
-		return nil, errors.Wrap(err, "Failed to pull torrent from the torrent store")
+		return nil, errors.Wrap(err, "failed to pull torrent from the torrent store")
 	}
 	reader := bytes.NewReader(r.Torrent)
 	mi, err := metainfo.Load(reader)
 	if err != nil {
-		return nil, errors.Wrap(err, "Failed to parse torrent")
+		return nil, errors.Wrap(err, "failed to parse torrent")
 	}
-	log.Info("Torrent pulled successfully")
+	log.Info("torrent pulled successfully")
 	return mi, nil
 }

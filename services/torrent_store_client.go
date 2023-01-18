@@ -7,7 +7,7 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
-	ts "github.com/webtor-io/torrent-store/torrent-store"
+	ts "github.com/webtor-io/torrent-store/proto"
 	"google.golang.org/grpc"
 )
 
@@ -22,27 +22,32 @@ type TorrentStoreClient struct {
 }
 
 const (
-	TORRENT_STORE_HOST_FLAG = "torrent-store-host"
-	TORRENT_STORE_PORT_FLAG = "torrent-store-port"
+	torrentStoreHostFlag = "torrent-store-host"
+	torrentStorePortFlag = "torrent-store-port"
 )
 
-func RegisterTorrentStoreClientFlags(c *cli.App) {
-	c.Flags = append(c.Flags, cli.StringFlag{
-		Name:   TORRENT_STORE_HOST_FLAG,
-		Usage:  "torrent store host",
-		Value:  "",
-		EnvVar: "TORRENT_STORE_SERVICE_HOST, TORRENT_STORE_HOST",
-	})
-	c.Flags = append(c.Flags, cli.IntFlag{
-		Name:   TORRENT_STORE_PORT_FLAG,
-		Usage:  "torrent store port",
-		Value:  50051,
-		EnvVar: "TORRENT_STORE_SERVICE_PORT, TORRENT_STORE_PORT",
-	})
+func RegisterTorrentStoreClientFlags(f []cli.Flag) []cli.Flag {
+	return append(f,
+		cli.StringFlag{
+			Name:   torrentStoreHostFlag,
+			Usage:  "torrent store host",
+			Value:  "",
+			EnvVar: "TORRENT_STORE_SERVICE_HOST, TORRENT_STORE_HOST",
+		},
+		cli.IntFlag{
+			Name:   torrentStorePortFlag,
+			Usage:  "torrent store port",
+			Value:  50051,
+			EnvVar: "TORRENT_STORE_SERVICE_PORT, TORRENT_STORE_PORT",
+		},
+	)
 }
 
 func NewTorrentStoreClient(c *cli.Context) *TorrentStoreClient {
-	return &TorrentStoreClient{host: c.String(TORRENT_STORE_HOST_FLAG), port: c.Int(TORRENT_STORE_PORT_FLAG), inited: false}
+	return &TorrentStoreClient{
+		host: c.String(torrentStoreHostFlag),
+		port: c.Int(torrentStorePortFlag),
+	}
 }
 
 func (s *TorrentStoreClient) get() (ts.TorrentStoreClient, error) {
@@ -51,7 +56,7 @@ func (s *TorrentStoreClient) get() (ts.TorrentStoreClient, error) {
 	conn, err := grpc.Dial(addr, grpc.WithInsecure())
 	s.conn = conn
 	if err != nil {
-		return nil, errors.Wrapf(err, "Failed to dial torrent store addr=%v", addr)
+		return nil, errors.Wrapf(err, "failed to dial torrent store addr=%v", addr)
 	}
 	return ts.NewTorrentStoreClient(s.conn), nil
 }
