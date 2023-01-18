@@ -42,7 +42,7 @@ func run(c *cli.Context) error {
 	// And SERVE!
 	err := serve.Serve()
 	if err != nil {
-		log.WithError(err).Error("Got server error")
+		log.WithError(err).Error("got server error")
 	}
 	return err
 }

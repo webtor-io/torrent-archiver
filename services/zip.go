@@ -16,6 +16,13 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type file struct {
+	path      string
+	size      uint64
+	modified  time.Time
+	pathParts []string
+}
+
 type Zip struct {
 	ts       *TorrentStore
 	infoHash string
@@ -35,8 +42,8 @@ func newFolderWriter(path string) *folderWriter {
 	return &folderWriter{written: []string{}, path: path}
 }
 
-func (s *folderWriter) write(zw *zip.Writer, info *metainfo.Info, f *metainfo.FileInfo, mi *metainfo.MetaInfo) error {
-	parts := getPath(info, f)
+func (s *folderWriter) write(zw *zip.Writer, f file) error {
+	parts := f.pathParts
 	if len(parts) == 1 {
 		return nil
 	}
@@ -54,10 +61,10 @@ func (s *folderWriter) write(zw *zip.Writer, info *metainfo.Info, f *metainfo.Fi
 		if found {
 			continue
 		}
-		log.Infof("Adding folder=%s", path)
+		log.Infof("adding folder=%s", path)
 		fh := &zip.FileHeader{
 			Name:     path + "/",
-			Modified: time.Unix(mi.CreationDate, 0),
+			Modified: f.modified,
 		}
 		err := zw.CreateHeader(fh)
 		if err != nil {
@@ -80,9 +87,9 @@ func NewZip(ts *TorrentStore, infoHash string, path string, baseURL string, toke
 	}
 }
 
-func (s *Zip) writeFile(zw *zip.Writer, info *metainfo.Info, f *metainfo.FileInfo, mi *metainfo.MetaInfo, fw *folderWriter) error {
-	path := strings.Join(getPath(info, f), "/")
-	err := fw.write(zw, info, f, mi)
+func (s *Zip) writeFile(zw *zip.Writer, f file, fw *folderWriter) error {
+	path := f.path
+	err := fw.write(zw, f)
 	if err != nil {
 		return err
 	}
@@ -91,8 +98,8 @@ func (s *Zip) writeFile(zw *zip.Writer, info *metainfo.Info, f *metainfo.FileInf
 	fh := &zip.FileHeader{
 		Name:               strings.TrimPrefix(path, s.path+"/"),
 		URL:                url,
-		UncompressedSize64: uint64(f.Length),
-		Modified:           time.Unix(mi.CreationDate, 0),
+		UncompressedSize64: f.size,
+		Modified:           f.modified,
 	}
 	err = zw.CreateHeader(fh)
 	if err != nil {
@@ -110,11 +117,7 @@ func getPath(info *metainfo.Info, f *metainfo.FileInfo) []string {
 }
 
 func (s *Zip) Size() (size int64, err error) {
-	mi, err := s.ts.Get(s.infoHash)
-	if err != nil {
-		return
-	}
-	info, err := mi.UnmarshalInfo()
+	files, err := s.generateFileList()
 	if err != nil {
 		return
 	}
@@ -122,55 +125,69 @@ func (s *Zip) Size() (size int64, err error) {
 
 	zw := zip.NewWriter(&buf, 0, -1, nil)
 	fw := newFolderWriter(s.path)
-	for _, f := range info.UpvertedFiles() {
-		path := strings.Join(getPath(&info, &f), "/")
-		if strings.HasPrefix(path, s.path) {
-			err = fw.write(zw, &info, &f, mi)
-			if err != nil {
-				return 0, err
-			}
-			header := &zip.FileHeader{
-				Name:               strings.TrimPrefix(path, s.path+"/"),
-				Method:             zip.Store,
-				UncompressedSize64: uint64(f.Length),
-				Modified:           time.Unix(mi.CreationDate, 0),
-			}
-			cerr := zw.CreateHeader(header)
-			if cerr != nil {
-				err = cerr
-				zw.Close()
-				return
-			}
-
-			size += f.Length
+	for _, f := range files {
+		err = fw.write(zw, f)
+		if err != nil {
+			return 0, err
 		}
+		header := &zip.FileHeader{
+			Name:               strings.TrimPrefix(f.path, s.path+"/"),
+			Method:             zip.Store,
+			UncompressedSize64: f.size,
+			Modified:           f.modified,
+		}
+		cerr := zw.CreateHeader(header)
+		if cerr != nil {
+			err = cerr
+			zw.Close()
+			return
+		}
+
+		size += int64(f.size)
 	}
 	zw.Close()
 	size += int64(buf.Len())
 	return
 }
-
-func (s *Zip) Write(w io.Writer, start int64, end int64) error {
+func (s *Zip) generateFileList() ([]file, error) {
 	mi, err := s.ts.Get(s.infoHash)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	info, err := mi.UnmarshalInfo()
-	if err != nil {
-		return err
+	if err == nil {
+		return nil, err
 	}
+	var res []file
+	for _, f := range info.UpvertedFiles() {
+		p := getPath(&info, &f)
+		path := strings.Join(p, "/")
+		if strings.HasPrefix(path, s.path) {
+			res = append(res, file{
+				path:      path,
+				pathParts: p,
+				size:      uint64(f.Length),
+				modified:  time.Unix(mi.CreationDate, 0),
+			})
+		}
+	}
+	return res, nil
+}
+
+func (s *Zip) Write(w io.Writer, start int64, end int64) error {
 	zw := zip.NewWriter(w, start, end, nil)
 	defer zw.Close()
 	log.Infof("start building archive for path=%s infoHash=%s", s.path, s.infoHash)
 	log.Info(s.path)
+	files, err := s.generateFileList()
+	if err != nil {
+		return errors.Wrap(err, "failed to generate file list")
+	}
 	fw := newFolderWriter(s.path)
-	for _, f := range info.UpvertedFiles() {
-		path := strings.Join(getPath(&info, &f), "/")
-		if strings.HasPrefix(path, s.path) {
-			err := s.writeFile(zw, &info, &f, mi, fw)
-			if err != nil {
-				return errors.Wrapf(err, "failed to write %s", path)
-			}
+	for _, f := range files {
+		err := s.writeFile(zw, f, fw)
+		if err != nil {
+			return errors.Wrapf(err, "failed to write %s", f.path)
 		}
 	}
 	log.Infof("finish building archive for path=%s infoHash=%s", s.path, s.infoHash)

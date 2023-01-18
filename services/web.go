@@ -101,7 +101,7 @@ func (s *Web) Serve() error {
 		}
 
 		name := filepath.Base(r.URL.Path)
-		log.Infof("Making archive with name=%s", name)
+		log.Infof("making archive with name=%s", name)
 
 		rng := r.Header.Get("Range")
 		begin := 0
