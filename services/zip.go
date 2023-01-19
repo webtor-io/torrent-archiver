@@ -155,7 +155,7 @@ func (s *Zip) generateFileList() ([]file, error) {
 		return nil, err
 	}
 	info, err := mi.UnmarshalInfo()
-	if err == nil {
+	if err != nil {
 		return nil, err
 	}
 	var res []file

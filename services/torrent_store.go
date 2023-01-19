@@ -1,26 +1,57 @@
 package services
 
 import (
-	"sync"
+	"bytes"
+	"context"
+	"time"
 
 	"github.com/anacrolix/torrent/metainfo"
+	"github.com/pkg/errors"
+	log "github.com/sirupsen/logrus"
+	"github.com/webtor-io/lazymap"
+	ts "github.com/webtor-io/torrent-store/proto"
 )
 
 type TorrentStore struct {
-	sm sync.Map
-	cl *TorrentStoreClient
+	lazymap.LazyMap
+	ts *TorrentStoreClient
 }
 
-func NewTorrentStore(cl *TorrentStoreClient) *TorrentStore {
+func NewTorrentStore(ts *TorrentStoreClient) *TorrentStore {
 	return &TorrentStore{
-		cl: cl,
+		ts: ts,
+		LazyMap: lazymap.New(&lazymap.Config{
+			Capacity: 100,
+		}),
 	}
 }
 
-func (s *TorrentStore) Get(infoHash string) (*metainfo.MetaInfo, error) {
-	v, loaded := s.sm.LoadOrStore(infoHash, NewMetaInfo(s.cl, infoHash))
-	if !loaded {
-		defer s.sm.Delete(infoHash)
+func (s *TorrentStore) get(h string) (*metainfo.MetaInfo, error) {
+	c, err := s.ts.Get()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to get torrent store client")
 	}
-	return v.(*MetaInfo).Get()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	r, err := c.Pull(ctx, &ts.PullRequest{InfoHash: h})
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to pull torrent from the torrent store")
+	}
+	reader := bytes.NewReader(r.Torrent)
+	mi, err := metainfo.Load(reader)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to parse torrent")
+	}
+	log.Info("torrent pulled successfully")
+	return mi, nil
+}
+
+func (s *TorrentStore) Get(h string) (*metainfo.MetaInfo, error) {
+	mi, err := s.LazyMap.Get(h, func() (interface{}, error) {
+		return s.get(h)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return mi.(*metainfo.MetaInfo), nil
 }

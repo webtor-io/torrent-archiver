@@ -371,6 +371,8 @@ github.com/vmihailenco/tagparser/v2 v2.0.0 h1:y09buUbR+b5aycVFQs/g70pqKVZNBmxwAh
 github.com/vmihailenco/tagparser/v2 v2.0.0/go.mod h1:Wri+At7QHww0WTrCBeu4J6bNtoV6mEfg5OIWRZA9qds=
 github.com/webtor-io/common-services v0.0.0-20221220192601-501cd9ace487 h1:NCXLGRXRE6fRsMW7wQy+7Ch8SL0NZ3pAxlKOSowFVas=
 github.com/webtor-io/common-services v0.0.0-20221220192601-501cd9ace487/go.mod h1:7zcHof4QtmA0X50DDp3xFaw5YtT9q7M4lVbs714eemo=
+github.com/webtor-io/lazymap v0.0.0-20221030185154-1799721becef h1:tSAcIGxgmsxFJnLRyTkhzFhjGAtaOZ5g2osBHG3JYBs=
+github.com/webtor-io/lazymap v0.0.0-20221030185154-1799721becef/go.mod h1:za/bioTGK3VjG3+mK7/kpx0TV8++ytZkdOQ1MJ2HTjM=
 github.com/webtor-io/torrent-store v0.0.0-20221220185507-fbe016ed5cee h1:p5qw/dX5hJn0Dpm6wQHVIP0zTOTtto/8Dit9CsXqBmI=
 github.com/webtor-io/torrent-store v0.0.0-20221220185507-fbe016ed5cee/go.mod h1:9j/NiH+16+yl6Z9bEu1p9lfdYjUlcXm1FZ/Ry88tweA=
 github.com/willf/bitset v1.1.9/go.mod h1:RjeCKbqT1RxIR/KWY6phxZiaY1IyutSBfGjNPySAYV4=

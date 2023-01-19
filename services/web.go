@@ -148,7 +148,7 @@ func (s *Web) Serve() error {
 			return
 		}
 	})
-	log.Infof("Serving Web at %v", addr)
+	log.Infof("serving Web at %v", addr)
 	return http.Serve(ln, mux)
 }
 
