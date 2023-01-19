@@ -11,8 +11,6 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/anacrolix/torrent/metainfo"
-
 	log "github.com/sirupsen/logrus"
 )
 
@@ -107,14 +105,6 @@ func (s *Zip) writeFile(zw *zip.Writer, f file, fw *folderWriter) error {
 	return nil
 }
 
-func getPath(info *metainfo.Info, f *metainfo.FileInfo) []string {
-	res := []string{info.Name}
-	if len(f.Path) > 0 {
-		res = append(res, f.Path...)
-	}
-	return res
-}
-
 func (s *Zip) Size() (size int64, err error) {
 	files, err := s.generateFileList()
 	if err != nil {
@@ -149,24 +139,14 @@ func (s *Zip) Size() (size int64, err error) {
 	return
 }
 func (s *Zip) generateFileList() ([]file, error) {
-	mi, err := s.ts.Get(s.infoHash)
-	if err != nil {
-		return nil, err
-	}
-	info, err := mi.UnmarshalInfo()
+	files, err := s.ts.Get(s.infoHash)
 	if err != nil {
 		return nil, err
 	}
 	var res []file
-	for _, f := range info.UpvertedFiles() {
-		p := getPath(&info, &f)
-		path := strings.Join(p, "/")
-		if strings.HasPrefix(path, s.path) {
-			res = append(res, file{
-				path:     path,
-				size:     uint64(f.Length),
-				modified: time.Unix(mi.CreationDate, 0),
-			})
+	for _, f := range files {
+		if strings.HasPrefix(f.path, s.path) {
+			res = append(res, f)
 		}
 	}
 	return res, nil

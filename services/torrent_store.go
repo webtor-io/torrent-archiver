@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"context"
+	"strings"
 	"time"
 
 	"github.com/anacrolix/torrent/metainfo"
@@ -26,7 +27,15 @@ func NewTorrentStore(ts *TorrentStoreClient) *TorrentStore {
 	}
 }
 
-func (s *TorrentStore) get(h string) (*metainfo.MetaInfo, error) {
+func getPath(info *metainfo.Info, f *metainfo.FileInfo) []string {
+	res := []string{info.Name}
+	if len(f.Path) > 0 {
+		res = append(res, f.Path...)
+	}
+	return res
+}
+
+func (s *TorrentStore) get(h string) ([]file, error) {
 	c, err := s.ts.Get()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get torrent store client")
@@ -43,15 +52,30 @@ func (s *TorrentStore) get(h string) (*metainfo.MetaInfo, error) {
 		return nil, errors.Wrap(err, "failed to parse torrent")
 	}
 	log.Info("torrent pulled successfully")
-	return mi, nil
+	info, err := mi.UnmarshalInfo()
+	if err != nil {
+		return nil, err
+	}
+	var res []file
+	for _, f := range info.UpvertedFiles() {
+		p := getPath(&info, &f)
+		path := strings.Join(p, "/")
+		res = append(res, file{
+			path:     path,
+			size:     uint64(f.Length),
+			modified: time.Unix(mi.CreationDate, 0),
+		})
+	}
+
+	return res, nil
 }
 
-func (s *TorrentStore) Get(h string) (*metainfo.MetaInfo, error) {
+func (s *TorrentStore) Get(h string) ([]file, error) {
 	mi, err := s.LazyMap.Get(h, func() (interface{}, error) {
 		return s.get(h)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return mi.(*metainfo.MetaInfo), nil
+	return mi.([]file), nil
 }
