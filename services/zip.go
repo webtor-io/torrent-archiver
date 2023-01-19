@@ -17,10 +17,9 @@ import (
 )
 
 type file struct {
-	path      string
-	size      uint64
-	modified  time.Time
-	pathParts []string
+	path     string
+	size     uint64
+	modified time.Time
 }
 
 type Zip struct {
@@ -39,19 +38,19 @@ type folderWriter struct {
 }
 
 func newFolderWriter(path string) *folderWriter {
-	return &folderWriter{written: []string{}, path: path}
+	return &folderWriter{
+		written: []string{},
+		path:    path,
+	}
 }
 
 func (s *folderWriter) write(zw *zip.Writer, f file) error {
-	parts := f.pathParts
+	parts := strings.Split(strings.TrimPrefix(f.path, s.path+"/"), "/")
 	if len(parts) == 1 {
 		return nil
 	}
 	for i := 1; i < len(parts); i++ {
 		path := strings.Join(parts[:i], "/")
-		if strings.HasPrefix(s.path, path) {
-			continue
-		}
 		found := false
 		for _, wr := range s.written {
 			if wr == path {
@@ -164,10 +163,9 @@ func (s *Zip) generateFileList() ([]file, error) {
 		path := strings.Join(p, "/")
 		if strings.HasPrefix(path, s.path) {
 			res = append(res, file{
-				path:      path,
-				pathParts: p,
-				size:      uint64(f.Length),
-				modified:  time.Unix(mi.CreationDate, 0),
+				path:     path,
+				size:     uint64(f.Length),
+				modified: time.Unix(mi.CreationDate, 0),
 			})
 		}
 	}
