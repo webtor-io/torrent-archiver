@@ -6,9 +6,6 @@ WORKDIR /app
 # copy the source files
 COPY . .
 
-# enable modules
-ENV GO111MODULE=on
-
 # disable crosscompiling
 ENV CGO_ENABLED=0
 
@@ -24,7 +21,7 @@ FROM alpine:latest
 COPY --from=build /app/server .
 
 # tell we are exposing our services
-EXPOSE 8080 8081 8082
+EXPOSE 8080 8081 8082 8083
 
 # run it!
 CMD ["./server"]
