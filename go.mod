@@ -9,6 +9,7 @@ require (
 	github.com/sirupsen/logrus v1.9.0
 	github.com/urfave/cli v1.22.11
 	github.com/webtor-io/common-services v0.0.0-20221220192601-501cd9ace487
+	github.com/webtor-io/lazymap v0.0.0-20221030185154-1799721becef
 	github.com/webtor-io/torrent-store v0.0.0-20221220185507-fbe016ed5cee
 	google.golang.org/grpc v1.52.0
 )
@@ -43,11 +44,10 @@ require (
 	github.com/vmihailenco/msgpack/v5 v5.3.5 // indirect
 	github.com/vmihailenco/tagparser v0.1.2 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
-	github.com/webtor-io/lazymap v0.0.0-20221030185154-1799721becef // indirect
 	golang.org/x/crypto v0.5.0 // indirect
-	golang.org/x/net v0.5.0 // indirect
-	golang.org/x/sys v0.4.0 // indirect
-	golang.org/x/text v0.6.0 // indirect
+	golang.org/x/net v0.7.0 // indirect
+	golang.org/x/sys v0.5.0 // indirect
+	golang.org/x/text v0.7.0 // indirect
 	google.golang.org/genproto v0.0.0-20230117162540-28d6b9783ac4 // indirect
 	google.golang.org/protobuf v1.28.1 // indirect
 	mellium.im/sasl v0.3.1 // indirect
