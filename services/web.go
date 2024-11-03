@@ -92,7 +92,7 @@ func (s *Web) Serve() error {
 		log.Infof("got request with infoHash=%s path=%s", infoHash, path)
 		z := NewZip(s.cl, infoHash, path, baseURL, token, apiKey, suffix)
 
-		size, err := z.Size()
+		size, err := z.Size(r.Context())
 
 		if err != nil {
 			log.WithError(err).Error("failed to get zip size")
@@ -141,7 +141,7 @@ func (s *Web) Serve() error {
 			f.Flush()
 		}
 
-		err = z.Write(w, int64(begin), int64(end))
+		err = z.Write(r.Context(), w, int64(begin), int64(end))
 		if err != nil {
 			log.WithError(err).Error("failed to write zip")
 			w.WriteHeader(http.StatusInternalServerError)

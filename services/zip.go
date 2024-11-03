@@ -2,6 +2,7 @@ package services
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/url"
 	"strings"
@@ -42,7 +43,7 @@ func newFolderWriter(path string) *folderWriter {
 	}
 }
 
-func (s *folderWriter) write(zw *zip.Writer, f file) error {
+func (s *folderWriter) write(ctx context.Context, zw *zip.Writer, f file) error {
 	parts := strings.Split(strings.TrimPrefix(f.path, s.path+"/"), "/")
 	if len(parts) == 1 {
 		return nil
@@ -63,7 +64,7 @@ func (s *folderWriter) write(zw *zip.Writer, f file) error {
 			Name:     path + "/",
 			Modified: f.modified,
 		}
-		err := zw.CreateHeader(fh)
+		err := zw.CreateHeader(ctx, fh)
 		if err != nil {
 			return err
 		}
@@ -84,9 +85,9 @@ func NewZip(ts *TorrentStore, infoHash string, path string, baseURL string, toke
 	}
 }
 
-func (s *Zip) writeFile(zw *zip.Writer, f file, fw *folderWriter) error {
+func (s *Zip) writeFile(ctx context.Context, zw *zip.Writer, f file, fw *folderWriter) error {
 	path := f.path
-	err := fw.write(zw, f)
+	err := fw.write(ctx, zw, f)
 	if err != nil {
 		return err
 	}
@@ -98,14 +99,14 @@ func (s *Zip) writeFile(zw *zip.Writer, f file, fw *folderWriter) error {
 		UncompressedSize64: f.size,
 		Modified:           f.modified,
 	}
-	err = zw.CreateHeader(fh)
+	err = zw.CreateHeader(ctx, fh)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (s *Zip) Size() (size int64, err error) {
+func (s *Zip) Size(ctx context.Context) (size int64, err error) {
 	files, err := s.generateFileList()
 	if err != nil {
 		return
@@ -115,7 +116,7 @@ func (s *Zip) Size() (size int64, err error) {
 	zw := zip.NewWriter(&buf, 0, -1, nil)
 	fw := newFolderWriter(s.path)
 	for _, f := range files {
-		err = fw.write(zw, f)
+		err = fw.write(ctx, zw, f)
 		if err != nil {
 			return 0, err
 		}
@@ -125,7 +126,7 @@ func (s *Zip) Size() (size int64, err error) {
 			UncompressedSize64: f.size,
 			Modified:           f.modified,
 		}
-		cerr := zw.CreateHeader(header)
+		cerr := zw.CreateHeader(ctx, header)
 		if cerr != nil {
 			err = cerr
 			zw.Close()
@@ -152,7 +153,7 @@ func (s *Zip) generateFileList() ([]file, error) {
 	return res, nil
 }
 
-func (s *Zip) Write(w io.Writer, start int64, end int64) error {
+func (s *Zip) Write(ctx context.Context, w io.Writer, start int64, end int64) error {
 	zw := zip.NewWriter(w, start, end, nil)
 	defer zw.Close()
 	log.Infof("start building archive for path=%s infoHash=%s", s.path, s.infoHash)
@@ -163,7 +164,7 @@ func (s *Zip) Write(w io.Writer, start int64, end int64) error {
 	}
 	fw := newFolderWriter(s.path)
 	for _, f := range files {
-		err := s.writeFile(zw, f, fw)
+		err := s.writeFile(ctx, zw, f, fw)
 		if err != nil {
 			return errors.Wrapf(err, "failed to write %s", f.path)
 		}

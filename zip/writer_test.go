@@ -2,6 +2,7 @@ package zip_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -46,7 +47,7 @@ func getBytes(s *httptest.Server, begin int64, end int64, data []string) []byte 
 			UncompressedSize64: uint64(len(d)),
 		}
 		header.SetMode(os.FileMode(int(0644)))
-		zw.CreateHeader(header)
+		zw.CreateHeader(context.Background(), header)
 	}
 	zw.Close()
 	return buf.Bytes()
@@ -162,7 +163,7 @@ func Test5GBZipping(t *testing.T) {
 		UncompressedSize64: uint64(size * 1024 * 1024 * 1024),
 	}
 	header.SetMode(os.FileMode(int(0644)))
-	zw.CreateHeader(header)
+	zw.CreateHeader(context.Background(), header)
 	zw.Close()
 	// f, _ := os.Create(fmt.Sprintf("%vGB.zip", size))
 	// f.Write(buf.Bytes())

@@ -7,6 +7,7 @@ package zip
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"hash"
@@ -253,7 +254,7 @@ func detectUTF8(s string) (valid, require bool) {
 // This returns a Writer to which the file contents should be written.
 // The file's contents must be written to the io.Writer before the next
 // call to Create, CreateHeader, or Close.
-func (w *Writer) CreateHeader(fh *FileHeader) error {
+func (w *Writer) CreateHeader(ctx context.Context, fh *FileHeader) error {
 	if len(w.dir) > 0 && w.dir[len(w.dir)-1].FileHeader == fh {
 		// See https://golang.org/issue/11144 confusion.
 		return errors.New("archive/zip: invalid duplicate FileHeader")
@@ -374,7 +375,7 @@ func (w *Writer) CreateHeader(fh *FileHeader) error {
 			w:     fw,
 			crc32: crc32.NewIEEE(),
 		}
-		err := w.writeFile(fh, cw)
+		err := w.writeFile(ctx, fh, cw)
 		if err != nil {
 			return err
 		}
@@ -463,12 +464,12 @@ func (w *crcWriter) Write(p []byte) (int, error) {
 	return w.w.Write(p)
 }
 
-func (w *Writer) writeFile(h *FileHeader, fw io.Writer) error {
+func (w *Writer) writeFile(ctx context.Context, h *FileHeader, fw io.Writer) error {
 	partial, skip, begin, end := w.getRange(int64(h.UncompressedSize64))
 	if skip {
 		return nil
 	}
-	req, err := http.NewRequest("GET", h.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", h.URL, nil)
 	if err != nil {
 		return err
 	}
