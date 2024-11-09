@@ -5,6 +5,7 @@ import (
 	"github.com/urfave/cli"
 	cs "github.com/webtor-io/common-services"
 	s "github.com/webtor-io/torrent-archiver/services"
+	"net/http"
 )
 
 func configure(app *cli.App) {
@@ -18,17 +19,27 @@ func configure(app *cli.App) {
 }
 
 func run(c *cli.Context) error {
+	var services []cs.Servable
 	// Setting ProbeService
 	probe := cs.NewProbe(c)
-	defer probe.Close()
+	if probe != nil {
+		services = append(services, probe)
+		defer probe.Close()
+	}
 
 	// Setting PprofService
 	pprof := cs.NewPprof(c)
-	defer pprof.Close()
+	if pprof != nil {
+		services = append(services, pprof)
+		defer pprof.Close()
+	}
 
 	// Setting PromService
 	prom := cs.NewProm(c)
-	defer prom.Close()
+	if prom != nil {
+		services = append(services, prom)
+		defer prom.Close()
+	}
 
 	// Setting TorrentStoreCLient
 	torrentStoreClient := s.NewTorrentStoreClient(c)
@@ -37,12 +48,16 @@ func run(c *cli.Context) error {
 	// Setting TorrentStore
 	torrentStore := s.NewTorrentStore(torrentStoreClient)
 
+	// Setting HTTP Client
+	httpClient := http.DefaultClient
+
 	// Setting WebService
-	web := s.NewWeb(c, torrentStore)
+	web := s.NewWeb(c, torrentStore, httpClient)
+	services = append(services, web)
 	defer web.Close()
 
 	// Setting ServeService
-	serve := cs.NewServe(probe, pprof, prom, web)
+	serve := cs.NewServe(services...)
 
 	// And SERVE!
 	err := serve.Serve()

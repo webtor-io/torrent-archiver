@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-package zip
+package ziphttp
 
 import (
 	"bufio"
@@ -50,9 +50,6 @@ type header struct {
 
 // NewWriter returns a new Writer writing a zip file to w.
 func NewWriter(w io.Writer, begin int64, end int64, cl *http.Client) *Writer {
-	if cl == nil {
-		cl = http.DefaultClient
-	}
 	return &Writer{begin: begin, end: end, cl: cl, w: bufio.NewWriter(w)}
 }
 
@@ -380,6 +377,7 @@ func (w *Writer) CreateHeader(ctx context.Context, fh *FileHeader) error {
 			return err
 		}
 		h.CRC32 = cw.crc32.Sum32()
+		//fmt.Printf("Write content for file=%v crc32=%v\n", h.Name, h.CRC32)
 	}
 	w.current += int64(h.UncompressedSize64)
 	if fh.hasDataDescriptor() {
@@ -480,13 +478,14 @@ func (w *Writer) writeFile(ctx context.Context, h *FileHeader, fw io.Writer) err
 	if err != nil {
 		return err
 	}
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(res.Body)
 	if res.StatusCode >= 300 {
 		return errors.Errorf("got bad http code from url=%v code=%v", h.URL, res.StatusCode)
 	}
-	defer res.Body.Close()
-	// n, err := io.Copy(fw, res.Body)
-	// fmt.Printf("Write content for file=%v len=%v url=%v begin=%v end=%v size=%v\n", h.Name, h.UncompressedSize64, h.URL, begin, end, n)
 	_, err = io.Copy(fw, res.Body)
+	//fmt.Printf("Write content for file=%v len=%v url=%v begin=%v end=%v size=%v\n", h.Name, h.UncompressedSize64, h.URL, begin, end, n)
 	if err != nil {
 		return err
 	}
@@ -504,8 +503,8 @@ func (w *Writer) writeHeader(h *FileHeader) error {
 		return nil
 	}
 	_, err = w.w.Write(bytes[begin:end])
-	// n, err := w.cw.Write(bytes[begin:end])
-	// fmt.Printf("Write header for file=%v len=%v begin=%v end=%v size=%v\n", h.Name, h.Length, begin, end, n)
+	//n, err := w.w.Write(bytes[begin:end])
+	//fmt.Printf("Write header for file=%v begin=%v end=%v size=%v data=%+v\n", h.Name, begin, end, n, h)
 	return err
 }
 

@@ -3,12 +3,12 @@ package services
 import (
 	"bytes"
 	"context"
+	"github.com/webtor-io/torrent-archiver/ziphttp"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/webtor-io/torrent-archiver/zip"
 
 	"github.com/pkg/errors"
 
@@ -29,6 +29,7 @@ type Zip struct {
 	token    string
 	apiKey   string
 	suffix   string
+	cl       *http.Client
 }
 
 type folderWriter struct {
@@ -43,7 +44,7 @@ func newFolderWriter(path string) *folderWriter {
 	}
 }
 
-func (s *folderWriter) write(ctx context.Context, zw *zip.Writer, f file) error {
+func (s *folderWriter) write(ctx context.Context, zw *ziphttp.Writer, f file) error {
 	parts := strings.Split(strings.TrimPrefix(f.path, s.path+"/"), "/")
 	if len(parts) == 1 {
 		return nil
@@ -60,7 +61,7 @@ func (s *folderWriter) write(ctx context.Context, zw *zip.Writer, f file) error 
 			continue
 		}
 		log.Infof("adding folder=%s", path)
-		fh := &zip.FileHeader{
+		fh := &ziphttp.FileHeader{
 			Name:     path + "/",
 			Modified: f.modified,
 		}
@@ -73,7 +74,7 @@ func (s *folderWriter) write(ctx context.Context, zw *zip.Writer, f file) error 
 	return nil
 }
 
-func NewZip(ts *TorrentStore, infoHash string, path string, baseURL string, token string, apiKey string, suffix string) *Zip {
+func NewZip(ts *TorrentStore, cl *http.Client, infoHash string, path string, baseURL string, token string, apiKey string, suffix string) *Zip {
 	return &Zip{
 		ts:       ts,
 		infoHash: infoHash,
@@ -82,10 +83,11 @@ func NewZip(ts *TorrentStore, infoHash string, path string, baseURL string, toke
 		token:    token,
 		apiKey:   apiKey,
 		suffix:   suffix,
+		cl:       cl,
 	}
 }
 
-func (s *Zip) writeFile(ctx context.Context, zw *zip.Writer, f file, fw *folderWriter) error {
+func (s *Zip) writeFile(ctx context.Context, zw *ziphttp.Writer, f file, fw *folderWriter) error {
 	path := f.path
 	err := fw.write(ctx, zw, f)
 	if err != nil {
@@ -93,7 +95,7 @@ func (s *Zip) writeFile(ctx context.Context, zw *zip.Writer, f file, fw *folderW
 	}
 	url := s.baseURL + "/" + s.infoHash + "/" + url.PathEscape(path) + s.suffix + "?download=true&token=" + s.token + "&api-key=" + s.apiKey
 	log.Infof("Adding file=%s url=%s", path, url)
-	fh := &zip.FileHeader{
+	fh := &ziphttp.FileHeader{
 		Name:               strings.TrimPrefix(path, s.path+"/"),
 		URL:                url,
 		UncompressedSize64: f.size,
@@ -107,40 +109,40 @@ func (s *Zip) writeFile(ctx context.Context, zw *zip.Writer, f file, fw *folderW
 }
 
 func (s *Zip) Size(ctx context.Context) (size int64, err error) {
-	files, err := s.generateFileList()
+	files, err := s.generateFileList(ctx)
 	if err != nil {
 		return
 	}
 	var buf bytes.Buffer
 
-	zw := zip.NewWriter(&buf, 0, -1, nil)
+	zw := ziphttp.NewWriter(&buf, 0, -1, nil)
 	fw := newFolderWriter(s.path)
 	for _, f := range files {
 		err = fw.write(ctx, zw, f)
 		if err != nil {
 			return 0, err
 		}
-		header := &zip.FileHeader{
+		header := &ziphttp.FileHeader{
 			Name:               strings.TrimPrefix(f.path, s.path+"/"),
-			Method:             zip.Store,
+			Method:             ziphttp.Store,
 			UncompressedSize64: f.size,
 			Modified:           f.modified,
 		}
 		cerr := zw.CreateHeader(ctx, header)
 		if cerr != nil {
 			err = cerr
-			zw.Close()
+			_ = zw.Close()
 			return
 		}
 
 		size += int64(f.size)
 	}
-	zw.Close()
+	_ = zw.Close()
 	size += int64(buf.Len())
 	return
 }
-func (s *Zip) generateFileList() ([]file, error) {
-	files, err := s.ts.Get(s.infoHash)
+func (s *Zip) generateFileList(ctx context.Context) ([]file, error) {
+	files, err := s.ts.Get(ctx, s.infoHash)
 	if err != nil {
 		return nil, err
 	}
@@ -154,11 +156,13 @@ func (s *Zip) generateFileList() ([]file, error) {
 }
 
 func (s *Zip) Write(ctx context.Context, w io.Writer, start int64, end int64) error {
-	zw := zip.NewWriter(w, start, end, nil)
-	defer zw.Close()
+	zw := ziphttp.NewWriter(w, start, end, s.cl)
+	defer func(zw *ziphttp.Writer) {
+		_ = zw.Close()
+	}(zw)
 	log.Infof("start building archive for path=%s infoHash=%s", s.path, s.infoHash)
 	log.Info(s.path)
-	files, err := s.generateFileList()
+	files, err := s.generateFileList(ctx)
 	if err != nil {
 		return errors.Wrap(err, "failed to generate file list")
 	}

@@ -3,6 +3,7 @@ package services
 import (
 	"crypto/sha1"
 	"fmt"
+	"github.com/dgrijalva/jwt-go"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -16,22 +17,33 @@ import (
 )
 
 type Web struct {
-	host string
-	port int
-	ln   net.Listener
-	cl   *TorrentStore
+	host            string
+	port            int
+	apiKey          string
+	apiSecret       string
+	torrentProxyUrl string
+	ln              net.Listener
+	ts              *TorrentStore
+	cl              *http.Client
 }
 
 const (
-	webHostFlag = "host"
-	webPortFlag = "port"
+	webHostFlag         = "host"
+	webPortFlag         = "port"
+	apiKeyFlag          = "api-key"
+	apiSecretFlag       = "api-secret"
+	torrentProxyUrlFlag = "proxy-url"
 )
 
-func NewWeb(c *cli.Context, cl *TorrentStore) *Web {
+func NewWeb(c *cli.Context, ts *TorrentStore, cl *http.Client) *Web {
 	return &Web{
-		host: c.String(webHostFlag),
-		port: c.Int(webPortFlag),
-		cl:   cl,
+		host:            c.String(webHostFlag),
+		port:            c.Int(webPortFlag),
+		ts:              ts,
+		cl:              cl,
+		apiKey:          c.String(apiKeyFlag),
+		apiSecret:       c.String(apiSecretFlag),
+		torrentProxyUrl: c.String(torrentProxyUrlFlag),
 	}
 }
 
@@ -47,6 +59,21 @@ func RegisterWebFlags(f []cli.Flag) []cli.Flag {
 			Usage: "http listening port",
 			Value: 8080,
 		},
+		cli.StringFlag{
+			Name:   apiKeyFlag,
+			Usage:  "api key",
+			EnvVar: "API_KEY",
+		},
+		cli.StringFlag{
+			Name:   apiSecretFlag,
+			Usage:  "api secret",
+			EnvVar: "API_SECRET",
+		},
+		cli.StringFlag{
+			Name:   torrentProxyUrlFlag,
+			Usage:  "torrent proxy url",
+			EnvVar: "TORRENT_PROXY_URL",
+		},
 	)
 }
 
@@ -60,37 +87,51 @@ func (s *Web) Serve() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		infoHash := r.Header.Get("X-Info-Hash")
+		if infoHash == "" && r.URL.Query().Get("infohash") != "" {
+			infoHash = strings.ToLower(r.URL.Query().Get("infohash"))
+		}
+
 		if infoHash == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		path := r.Header.Get("X-Origin-Path")
 		if path == "" {
+			path = "/"
+		}
+		suffix := ""
+		path = strings.TrimLeft(path, "/")
+		token := r.Header.Get("X-Token")
+		if token == "" && s.apiSecret != "" {
+			t := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{})
+			token, err = t.SignedString([]byte(s.apiSecret))
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+		}
+		if token == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		suffix := ""
-		if strings.Contains(r.Header.Get("X-Path"), "~tc") {
-			suffix = "~tc"
-		}
-		path = strings.TrimLeft(path, "/")
-		token := r.Header.Get("X-Token")
-		// if token == "" {
-		// 	w.WriteHeader(http.StatusBadRequest)
-		// 	return
-		// }
 		apiKey := r.Header.Get("X-Api-Key")
-		// if apiKey == "" {
-		// 	w.WriteHeader(http.StatusBadRequest)
-		// 	return
-		// }
+		if apiKey == "" && s.apiKey != "" {
+			apiKey = s.apiKey
+		}
+		if apiKey == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		baseURL := r.Header.Get("X-Proxy-Url")
+		if baseURL == "" && s.torrentProxyUrl != "" {
+			baseURL = s.torrentProxyUrl
+		}
 		if baseURL == "" {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
 		log.Infof("got request with infoHash=%s path=%s", infoHash, path)
-		z := NewZip(s.cl, infoHash, path, baseURL, token, apiKey, suffix)
+		z := NewZip(s.ts, s.cl, infoHash, path, baseURL, token, apiKey, suffix)
 
 		size, err := z.Size(r.Context())
 
@@ -154,6 +195,6 @@ func (s *Web) Serve() error {
 
 func (s *Web) Close() {
 	if s.ln != nil {
-		s.ln.Close()
+		_ = s.ln.Close()
 	}
 }

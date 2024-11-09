@@ -1,9 +1,10 @@
-package zip_test
+package ziphttp_test
 
 import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/webtor-io/torrent-archiver/ziphttp"
 	"io"
 	"log"
 	"net/http"
@@ -12,8 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-
-	"github.com/webtor-io/torrent-archiver/zip"
 )
 
 var (
@@ -39,9 +38,9 @@ func getLen(s *httptest.Server, begin int64, end int64, data []string) int64 {
 
 func getBytes(s *httptest.Server, begin int64, end int64, data []string) []byte {
 	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf, begin, end, s.Client())
+	zw := ziphttp.NewWriter(&buf, begin, end, s.Client())
 	for _, d := range data {
-		header := &zip.FileHeader{
+		header := &ziphttp.FileHeader{
 			Name:               d,
 			URL:                s.URL + "/" + d,
 			UncompressedSize64: uint64(len(d)),
@@ -59,7 +58,7 @@ func testReadData(t *testing.T, b []byte, data []string) {
 
 func testRead(t *testing.T, b []byte, data []byte) {
 	var wb bytes.Buffer
-	r, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+	r, err := ziphttp.NewReader(bytes.NewReader(b), int64(len(b)))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -156,8 +155,8 @@ func Test5GBZipping(t *testing.T) {
 	var buf bytes.Buffer
 	s := runGBServer(size)
 	defer s.Close()
-	zw := zip.NewWriter(&buf, 0, -1, s.Client())
-	header := &zip.FileHeader{
+	zw := ziphttp.NewWriter(&buf, 0, -1, s.Client())
+	header := &ziphttp.FileHeader{
 		Name:               fmt.Sprintf("%vGB", size),
 		URL:                s.URL,
 		UncompressedSize64: uint64(size * 1024 * 1024 * 1024),
@@ -168,7 +167,7 @@ func Test5GBZipping(t *testing.T) {
 	// f, _ := os.Create(fmt.Sprintf("%vGB.zip", size))
 	// f.Write(buf.Bytes())
 	len := int64(len(buf.Bytes()))
-	r, err := zip.NewReader(bytes.NewReader(buf.Bytes()), len)
+	r, err := ziphttp.NewReader(bytes.NewReader(buf.Bytes()), len)
 	if err != nil {
 		log.Fatal(err)
 	}

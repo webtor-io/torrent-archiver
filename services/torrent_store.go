@@ -35,13 +35,11 @@ func getPath(info *metainfo.Info, f *metainfo.FileInfo) []string {
 	return res
 }
 
-func (s *TorrentStore) get(h string) ([]file, error) {
+func (s *TorrentStore) get(ctx context.Context, h string) ([]file, error) {
 	c, err := s.ts.Get()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get torrent store client")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
 	r, err := c.Pull(ctx, &ts.PullRequest{InfoHash: h})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to pull torrent from the torrent store")
@@ -70,9 +68,9 @@ func (s *TorrentStore) get(h string) ([]file, error) {
 	return res, nil
 }
 
-func (s *TorrentStore) Get(h string) ([]file, error) {
+func (s *TorrentStore) Get(ctx context.Context, h string) ([]file, error) {
 	mi, err := s.LazyMap.Get(h, func() (interface{}, error) {
-		return s.get(h)
+		return s.get(ctx, h)
 	})
 	if err != nil {
 		return nil, err
