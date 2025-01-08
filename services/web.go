@@ -50,14 +50,16 @@ func NewWeb(c *cli.Context, ts *TorrentStore, cl *http.Client) *Web {
 func RegisterWebFlags(f []cli.Flag) []cli.Flag {
 	return append(f,
 		cli.StringFlag{
-			Name:  webHostFlag,
-			Usage: "listening host",
-			Value: "",
+			Name:   webHostFlag,
+			Usage:  "listening host",
+			Value:  "",
+			EnvVar: "WEB_HOST",
 		},
 		cli.IntFlag{
-			Name:  webPortFlag,
-			Usage: "http listening port",
-			Value: 8080,
+			Name:   webPortFlag,
+			Usage:  "http listening port",
+			Value:  8080,
+			EnvVar: "WEB_PORT",
 		},
 		cli.StringFlag{
 			Name:   apiKeyFlag,
