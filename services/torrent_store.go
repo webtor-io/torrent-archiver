@@ -14,14 +14,14 @@ import (
 )
 
 type TorrentStore struct {
-	lazymap.LazyMap
+	lazymap.LazyMap[[]file]
 	ts *TorrentStoreClient
 }
 
 func NewTorrentStore(ts *TorrentStoreClient) *TorrentStore {
 	return &TorrentStore{
 		ts: ts,
-		LazyMap: lazymap.New(&lazymap.Config{
+		LazyMap: lazymap.New[[]file](&lazymap.Config{
 			Capacity: 100,
 		}),
 	}
@@ -69,11 +69,7 @@ func (s *TorrentStore) get(ctx context.Context, h string) ([]file, error) {
 }
 
 func (s *TorrentStore) Get(ctx context.Context, h string) ([]file, error) {
-	mi, err := s.LazyMap.Get(h, func() (interface{}, error) {
+	return s.LazyMap.Get(h, func() ([]file, error) {
 		return s.get(ctx, h)
 	})
-	if err != nil {
-		return nil, err
-	}
-	return mi.([]file), nil
 }
