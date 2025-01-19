@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 
-	joonix "github.com/joonix/log"
 	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 )
