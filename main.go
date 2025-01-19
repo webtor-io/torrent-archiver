@@ -9,7 +9,6 @@ import (
 )
 
 func main() {
-	log.SetFormatter(joonix.NewFormatter())
 	app := cli.NewApp()
 	app.Name = "torrent-archiver"
 	app.Usage = "Generates archive with selected content from torrent"
