@@ -28,8 +28,14 @@ func NewTorrentStore(ts *TorrentStoreClient) *TorrentStore {
 }
 
 func getPath(info *metainfo.Info, f *metainfo.FileInfo) []string {
-	res := []string{info.Name}
-	if len(f.Path) > 0 {
+	name := info.Name
+	if info.NameUtf8 != "" {
+		name = info.NameUtf8
+	}
+	res := []string{name}
+	if len(f.PathUtf8) > 0 {
+		res = append(res, f.PathUtf8...)
+	} else if len(f.Path) > 0 {
 		res = append(res, f.Path...)
 	}
 	return res
@@ -70,6 +76,8 @@ func (s *TorrentStore) get(ctx context.Context, h string) ([]file, error) {
 
 func (s *TorrentStore) Get(ctx context.Context, h string) ([]file, error) {
 	return s.LazyMap.Get(h, func() ([]file, error) {
-		return s.get(ctx, h)
+		ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		return s.get(ctx2, h)
 	})
 }
