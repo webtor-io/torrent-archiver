@@ -74,10 +74,10 @@ func (s *TorrentStore) get(ctx context.Context, h string) ([]file, error) {
 	return res, nil
 }
 
-func (s *TorrentStore) Get(ctx context.Context, h string) ([]file, error) {
+func (s *TorrentStore) Get(h string) ([]file, error) {
 	return s.LazyMap.Get(h, func() ([]file, error) {
-		ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		return s.get(ctx2, h)
+		return s.get(ctx, h)
 	})
 }

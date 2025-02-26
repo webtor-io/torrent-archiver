@@ -109,7 +109,7 @@ func (s *Zip) writeFile(ctx context.Context, zw *ziphttp.Writer, f file, fw *fol
 }
 
 func (s *Zip) Size(ctx context.Context) (size int64, err error) {
-	files, err := s.generateFileList(ctx)
+	files, err := s.generateFileList()
 	if err != nil {
 		return
 	}
@@ -141,8 +141,8 @@ func (s *Zip) Size(ctx context.Context) (size int64, err error) {
 	size += int64(buf.Len())
 	return
 }
-func (s *Zip) generateFileList(ctx context.Context) ([]file, error) {
-	files, err := s.ts.Get(ctx, s.infoHash)
+func (s *Zip) generateFileList() ([]file, error) {
+	files, err := s.ts.Get(s.infoHash)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +162,7 @@ func (s *Zip) Write(ctx context.Context, w io.Writer, start int64, end int64) er
 	}(zw)
 	log.Infof("start building archive for path=%s infoHash=%s", s.path, s.infoHash)
 	log.Info(s.path)
-	files, err := s.generateFileList(ctx)
+	files, err := s.generateFileList()
 	if err != nil {
 		return errors.Wrap(err, "failed to generate file list")
 	}
