@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"google.golang.org/grpc/credentials/insecure"
 	"sync"
 
 	"github.com/pkg/errors"
@@ -22,8 +23,9 @@ type TorrentStoreClient struct {
 }
 
 const (
-	torrentStoreHostFlag = "torrent-store-host"
-	torrentStorePortFlag = "torrent-store-port"
+	torrentStoreHostFlag   = "torrent-store-host"
+	torrentStorePortFlag   = "torrent-store-port"
+	torrentStoreMaxMsgSize = 1024 * 1024 * 50
 )
 
 func RegisterTorrentStoreClientFlags(f []cli.Flag) []cli.Flag {
@@ -53,7 +55,13 @@ func NewTorrentStoreClient(c *cli.Context) *TorrentStoreClient {
 func (s *TorrentStoreClient) get() (ts.TorrentStoreClient, error) {
 	log.Info("Initializing TorrentStoreClient")
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
-	conn, err := grpc.Dial(addr, grpc.WithInsecure())
+	conn, err := grpc.NewClient(addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(torrentStoreMaxMsgSize),
+			grpc.MaxCallSendMsgSize(torrentStoreMaxMsgSize),
+		),
+	)
 	s.conn = conn
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to dial torrent store addr=%v", addr)
