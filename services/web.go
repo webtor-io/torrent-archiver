@@ -186,8 +186,10 @@ func (s *Web) Serve() error {
 
 		err = z.Write(r.Context(), w, int64(begin), int64(end))
 		if err != nil {
+			// Response is already committed by the Flush above (status + headers
+			// sent, body streaming), so we can't change the status code here —
+			// a WriteHeader call now only logs "superfluous response.WriteHeader".
 			log.WithError(err).Error("failed to write zip")
-			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 	})

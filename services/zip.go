@@ -60,7 +60,7 @@ func (s *folderWriter) write(ctx context.Context, zw *ziphttp.Writer, f file) er
 		if found {
 			continue
 		}
-		log.Infof("adding folder=%s", path)
+		log.Debugf("adding folder=%s", path)
 		fh := &ziphttp.FileHeader{
 			Name:     path + "/",
 			Modified: f.modified,
@@ -94,7 +94,9 @@ func (s *Zip) writeFile(ctx context.Context, zw *ziphttp.Writer, f file, fw *fol
 		return err
 	}
 	url := s.baseURL + "/" + s.infoHash + "/" + url.PathEscape(path) + s.suffix + "?download=true&token=" + s.token + "&api-key=" + s.apiKey
-	log.Infof("Adding file=%s url=%s", path, url)
+	// debug-level: per-file, fires once per archived entry — at info it was ~25 GB/day
+	// of Loki ingest on a multi-thousand-file torrent. url omitted: it carries token+api-key.
+	log.Debugf("adding file=%s", path)
 	fh := &ziphttp.FileHeader{
 		Name:               strings.TrimPrefix(path, s.path+"/"),
 		URL:                url,
