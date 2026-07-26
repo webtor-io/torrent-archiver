@@ -1,5 +1,10 @@
 # torrent-archiver
-Generates zip-archive from torrent
+Generates zip/tar archive from torrent. The format is selected by the
+extension of the requested filename (`<name>.zip` or `<name>.tar`, zip by
+default). Both formats are laid out deterministically (zip uses Store, tar is
+plain ustar/PAX), so archive size is known up front and any byte range can be
+served independently — downloads are resumable. Tar additionally carries no
+per-file checksums, so a resumed download never unpacks as "corrupt".
 
 # Usage
 

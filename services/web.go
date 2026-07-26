@@ -79,6 +79,58 @@ func RegisterWebFlags(f []cli.Flag) []cli.Flag {
 	)
 }
 
+// parseRange interprets a Range header against the archive size and returns
+// the inclusive byte window plus the response status. Only single ranges are
+// honored; an absent, malformed, or multi-range header falls back to the full
+// archive with 200 (RFC 7233 permits ignoring Range). A syntactically valid
+// but unsatisfiable range yields 416.
+func parseRange(rng string, size int64) (begin int64, end int64, status int) {
+	begin, end, status = 0, size-1, http.StatusOK
+	if rng == "" || !strings.HasPrefix(rng, "bytes=") {
+		return
+	}
+	spec := strings.TrimPrefix(rng, "bytes=")
+	if strings.Contains(spec, ",") {
+		return
+	}
+	parts := strings.SplitN(spec, "-", 2)
+	if len(parts) != 2 {
+		return
+	}
+	if parts[0] == "" {
+		// suffix range: last N bytes
+		n, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			return
+		}
+		if n <= 0 {
+			return 0, size - 1, http.StatusRequestedRangeNotSatisfiable
+		}
+		if n > size {
+			n = size
+		}
+		return size - n, size - 1, http.StatusPartialContent
+	}
+	b, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return
+	}
+	if b >= size {
+		return 0, size - 1, http.StatusRequestedRangeNotSatisfiable
+	}
+	e := size - 1
+	if parts[1] != "" {
+		pe, perr := strconv.ParseInt(parts[1], 10, 64)
+		if perr != nil || pe < b {
+			return
+		}
+		if pe < e {
+			e = pe
+		}
+	}
+	return b, e, http.StatusPartialContent
+}
+
 func (s *Web) Serve() error {
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
 	ln, err := net.Listen("tcp", addr)
@@ -132,64 +184,55 @@ func (s *Web) Serve() error {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		log.Infof("got request with infoHash=%s path=%s", infoHash, path)
-		z := NewZip(s.ts, s.cl, infoHash, path, baseURL, token, apiKey, suffix)
+		name := filepath.Base(r.URL.Path)
+		log.Infof("got request with infoHash=%s path=%s name=%s", infoHash, path, name)
+
+		// Format is carried by the requested filename extension
+		// (rest-api names the archive <dir>.zip or <dir>.tar), so the
+		// proxy chain stays format-agnostic.
+		var z Archive
+		if strings.HasSuffix(strings.ToLower(name), ".tar") {
+			z = NewTar(s.ts, s.cl, infoHash, path, baseURL, token, apiKey, suffix)
+		} else {
+			z = NewZip(s.ts, s.cl, infoHash, path, baseURL, token, apiKey, suffix)
+		}
 
 		size, err := z.Size(r.Context())
 
 		if err != nil {
-			log.WithError(err).Error("failed to get zip size")
+			log.WithError(err).Error("failed to get archive size")
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		name := filepath.Base(r.URL.Path)
-		log.Infof("making archive with name=%s", name)
+		begin, end, status := parseRange(r.Header.Get("Range"), size)
 
-		rng := r.Header.Get("Range")
-		begin := 0
-		end := int(size - 1)
-		clen := size
-		if rng != "" {
-			parts := strings.Split(strings.TrimPrefix(rng, "bytes="), "-")
-			if parts[1] != "" {
-				end, err = strconv.Atoi(parts[1])
-				if err != nil {
-					log.WithError(err).Errorf("failed to parse range %s", rng)
-					w.WriteHeader(http.StatusInternalServerError)
-					return
-				}
-			}
-			begin, err = strconv.Atoi(parts[0])
-			if err != nil {
-				log.WithError(err).Errorf("failed to parse range %s", rng)
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			clen = int64(end - begin + 1)
-		}
-
-		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Type", z.ContentType())
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", name))
 		w.Header().Set("Accept-Ranges", "bytes")
-		w.Header().Set("Content-Length", fmt.Sprintf("%v", clen))
 		w.Header().Set("Etag", fmt.Sprintf("\"%x\"", sha1.Sum([]byte(infoHash+path))))
 		w.Header().Set("Last-Modified", time.Unix(0, 0).Format(http.TimeFormat))
 
-		if rng != "" {
+		if status == http.StatusRequestedRangeNotSatisfiable {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", size))
+			w.WriteHeader(status)
+			return
+		}
+		w.Header().Set("Content-Length", fmt.Sprintf("%v", end-begin+1))
+		if status == http.StatusPartialContent {
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %v-%v/%v", begin, end, size))
-			w.WriteHeader(http.StatusPartialContent)
+			w.WriteHeader(status)
 		}
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
 
-		err = z.Write(r.Context(), w, int64(begin), int64(end))
+		err = z.Write(r.Context(), w, begin, end)
 		if err != nil {
 			// Response is already committed by the Flush above (status + headers
 			// sent, body streaming), so we can't change the status code here —
 			// a WriteHeader call now only logs "superfluous response.WriteHeader".
-			log.WithError(err).Error("failed to write zip")
+			log.WithError(err).Error("failed to write archive")
 			return
 		}
 	})

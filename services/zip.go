@@ -3,12 +3,12 @@ package services
 import (
 	"bytes"
 	"context"
-	"github.com/webtor-io/torrent-archiver/ziphttp"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
+
+	"github.com/webtor-io/torrent-archiver/ziphttp"
 
 	"github.com/pkg/errors"
 
@@ -32,46 +32,8 @@ type Zip struct {
 	cl       *http.Client
 }
 
-type folderWriter struct {
-	written []string
-	path    string
-}
-
-func newFolderWriter(path string) *folderWriter {
-	return &folderWriter{
-		written: []string{},
-		path:    path,
-	}
-}
-
-func (s *folderWriter) write(ctx context.Context, zw *ziphttp.Writer, f file) error {
-	parts := strings.Split(strings.TrimPrefix(f.path, s.path+"/"), "/")
-	if len(parts) == 1 {
-		return nil
-	}
-	for i := 1; i < len(parts); i++ {
-		path := strings.Join(parts[:i], "/")
-		found := false
-		for _, wr := range s.written {
-			if wr == path {
-				found = true
-			}
-		}
-		if found {
-			continue
-		}
-		log.Debugf("adding folder=%s", path)
-		fh := &ziphttp.FileHeader{
-			Name:     path + "/",
-			Modified: f.modified,
-		}
-		err := zw.CreateHeader(ctx, fh)
-		if err != nil {
-			return err
-		}
-		s.written = append(s.written, path)
-	}
-	return nil
+func (s *Zip) ContentType() string {
+	return "application/zip"
 }
 
 func NewZip(ts *TorrentStore, cl *http.Client, infoHash string, path string, baseURL string, token string, apiKey string, suffix string) *Zip {
@@ -87,40 +49,46 @@ func NewZip(ts *TorrentStore, cl *http.Client, infoHash string, path string, bas
 	}
 }
 
-func (s *Zip) writeFile(ctx context.Context, zw *ziphttp.Writer, f file, fw *folderWriter) error {
-	path := f.path
-	err := fw.write(ctx, zw, f)
+func (s *Zip) folderHeader(name string, modified time.Time) *ziphttp.FileHeader {
+	return &ziphttp.FileHeader{
+		Name:     name,
+		Modified: modified,
+	}
+}
+
+func (s *Zip) writeFile(ctx context.Context, zw *ziphttp.Writer, f file, fw *folderWalker) error {
+	err := fw.walk(f, func(name string) error {
+		log.Debugf("adding folder=%s", name)
+		return zw.CreateHeader(ctx, s.folderHeader(name, f.modified))
+	})
 	if err != nil {
 		return err
 	}
-	url := s.baseURL + "/" + s.infoHash + "/" + url.PathEscape(path) + s.suffix + "?download=true&token=" + s.token + "&api-key=" + s.apiKey
 	// debug-level: per-file, fires once per archived entry — at info it was ~25 GB/day
 	// of Loki ingest on a multi-thousand-file torrent. url omitted: it carries token+api-key.
-	log.Debugf("adding file=%s", path)
+	log.Debugf("adding file=%s", f.path)
 	fh := &ziphttp.FileHeader{
-		Name:               strings.TrimPrefix(path, s.path+"/"),
-		URL:                url,
+		Name:               strings.TrimPrefix(f.path, s.path+"/"),
+		URL:                fileURL(s.baseURL, s.infoHash, f.path, s.suffix, s.token, s.apiKey),
 		UncompressedSize64: f.size,
 		Modified:           f.modified,
 	}
-	err = zw.CreateHeader(ctx, fh)
-	if err != nil {
-		return err
-	}
-	return nil
+	return zw.CreateHeader(ctx, fh)
 }
 
 func (s *Zip) Size(ctx context.Context) (size int64, err error) {
-	files, err := s.generateFileList()
+	files, err := generateFileList(s.ts, s.infoHash, s.path)
 	if err != nil {
 		return
 	}
 	var buf bytes.Buffer
 
 	zw := ziphttp.NewWriter(&buf, 0, -1, nil)
-	fw := newFolderWriter(s.path)
+	fw := newFolderWalker(s.path)
 	for _, f := range files {
-		err = fw.write(ctx, zw, f)
+		err = fw.walk(f, func(name string) error {
+			return zw.CreateHeader(ctx, s.folderHeader(name, f.modified))
+		})
 		if err != nil {
 			return 0, err
 		}
@@ -143,19 +111,6 @@ func (s *Zip) Size(ctx context.Context) (size int64, err error) {
 	size += int64(buf.Len())
 	return
 }
-func (s *Zip) generateFileList() ([]file, error) {
-	files, err := s.ts.Get(s.infoHash)
-	if err != nil {
-		return nil, err
-	}
-	var res []file
-	for _, f := range files {
-		if strings.HasPrefix(f.path, s.path) {
-			res = append(res, f)
-		}
-	}
-	return res, nil
-}
 
 func (s *Zip) Write(ctx context.Context, w io.Writer, start int64, end int64) error {
 	zw := ziphttp.NewWriter(w, start, end, s.cl)
@@ -163,12 +118,11 @@ func (s *Zip) Write(ctx context.Context, w io.Writer, start int64, end int64) er
 		_ = zw.Close()
 	}(zw)
 	log.Infof("start building archive for path=%s infoHash=%s", s.path, s.infoHash)
-	log.Info(s.path)
-	files, err := s.generateFileList()
+	files, err := generateFileList(s.ts, s.infoHash, s.path)
 	if err != nil {
 		return errors.Wrap(err, "failed to generate file list")
 	}
-	fw := newFolderWriter(s.path)
+	fw := newFolderWalker(s.path)
 	for _, f := range files {
 		err := s.writeFile(ctx, zw, f, fw)
 		if err != nil {

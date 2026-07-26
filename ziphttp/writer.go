@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/pkg/errors"
+	"github.com/webtor-io/torrent-archiver/internal/rangeclip"
 )
 
 var (
@@ -390,21 +391,7 @@ func (w *Writer) CreateHeader(ctx context.Context, fh *FileHeader) error {
 }
 
 func (w *Writer) getRange(l int64) (partial bool, skip bool, begin int64, end int64) {
-	end = l
-	if w.current+l <= w.begin || (w.current > w.end && w.end != -1) {
-		partial = true
-		skip = true
-		return
-	}
-	if w.current+l > w.begin && w.current < w.begin {
-		partial = true
-		begin = w.begin - w.current
-	}
-	if w.current+l > w.end && w.current <= w.end {
-		partial = true
-		end = w.end - w.current + 1
-	}
-	return
+	return rangeclip.Clip(w.current, w.begin, w.end, l)
 }
 
 func (w *Writer) getDescriptor(h *FileHeader) ([]byte, error) {
