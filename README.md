@@ -6,6 +6,14 @@ plain ustar/PAX), so archive size is known up front and any byte range can be
 served independently — downloads are resumable. Tar additionally carries no
 per-file checksums, so a resumed download never unpacks as "corrupt".
 
+By default the archive contains every file under the requested path
+(`X-Origin-Path`). A partial archive can be requested with one or more
+repeated `?paths=` query values: each value is a torrent-rooted file or
+folder path, and only files matching a value exactly or living under a
+value-as-folder are included. The selection participates in the `ETag`, a
+selection matching no files yields `404`, and more than 1024 values yield
+`400`.
+
 # Usage
 
 ```

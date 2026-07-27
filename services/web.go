@@ -3,13 +3,16 @@ package services
 import (
 	"crypto/sha1"
 	"fmt"
-	"github.com/dgrijalva/jwt-go"
 	"net"
 	"net/http"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/dgrijalva/jwt-go"
 
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
@@ -77,6 +80,36 @@ func RegisterWebFlags(f []cli.Flag) []cli.Flag {
 			EnvVar: "TORRENT_PROXY_URL",
 		},
 	)
+}
+
+// maxSelectedPaths bounds the ?paths= selection; a checked folder covers
+// its whole subtree with a single path, and rest-api additionally caps the
+// selection's encoded byte length, so a legitimate selection stays far
+// below this.
+const maxSelectedPaths = 1024
+
+// parseSelectedPaths normalizes the repeated ?paths= query values into
+// sorted torrent-rooted paths (no leading slash, as in metainfo file
+// lists). Sorting makes the selection a set: the ETag and any downstream
+// cache key stay identical however the client ordered the values. ok is
+// false when the selection exceeds maxSelectedPaths or smuggles a NUL byte
+// (which would alias distinct selections in the NUL-joined ETag).
+func parseSelectedPaths(values []string) (selected []string, ok bool) {
+	if len(values) > maxSelectedPaths {
+		return nil, false
+	}
+	for _, v := range values {
+		if strings.ContainsRune(v, 0) {
+			return nil, false
+		}
+		v = strings.Trim(v, "/")
+		if v == "" {
+			continue
+		}
+		selected = append(selected, v)
+	}
+	sort.Strings(selected)
+	return slices.Compact(selected), true
 }
 
 // parseRange interprets a Range header against the archive size and returns
@@ -184,17 +217,38 @@ func (s *Web) Serve() error {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		selected, ok := parseSelectedPaths(r.URL.Query()["paths"])
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		name := filepath.Base(r.URL.Path)
-		log.Infof("got request with infoHash=%s path=%s name=%s", infoHash, path, name)
+		log.Infof("got request with infoHash=%s path=%s name=%s selected=%d", infoHash, path, name, len(selected))
+
+		// The file list is computed exactly once per request and shared by
+		// Size and Write — resumable downloads issue many Range requests
+		// and must never pay (or drift between) repeated filter passes.
+		files, err := generateFileList(s.ts, infoHash, path, selected)
+		if err != nil {
+			log.WithError(err).Error("failed to generate file list")
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		// A selection that intersects the torrent to nothing (stale link,
+		// mistyped path) must not silently produce an empty archive.
+		if len(selected) > 0 && len(files) == 0 {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 
 		// Format is carried by the requested filename extension
 		// (rest-api names the archive <dir>.zip or <dir>.tar), so the
 		// proxy chain stays format-agnostic.
 		var z Archive
 		if strings.HasSuffix(strings.ToLower(name), ".tar") {
-			z = NewTar(s.ts, s.cl, infoHash, path, baseURL, token, apiKey, suffix)
+			z = NewTar(s.cl, files, infoHash, path, baseURL, token, apiKey, suffix)
 		} else {
-			z = NewZip(s.ts, s.cl, infoHash, path, baseURL, token, apiKey, suffix)
+			z = NewZip(s.cl, files, infoHash, path, baseURL, token, apiKey, suffix)
 		}
 
 		size, err := z.Size(r.Context())
@@ -210,7 +264,14 @@ func (s *Web) Serve() error {
 		w.Header().Set("Content-Type", z.ContentType())
 		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", name))
 		w.Header().Set("Accept-Ranges", "bytes")
-		w.Header().Set("Etag", fmt.Sprintf("\"%x\"", sha1.Sum([]byte(infoHash+path))))
+		// Selection participates in the ETag so differently-filtered
+		// archives of the same path never validate against each other;
+		// the no-selection ETag stays byte-identical to the old scheme.
+		etagSrc := infoHash + path
+		if len(selected) > 0 {
+			etagSrc += "?paths=" + strings.Join(selected, "\x00")
+		}
+		w.Header().Set("Etag", fmt.Sprintf("\"%x\"", sha1.Sum([]byte(etagSrc))))
 		w.Header().Set("Last-Modified", time.Unix(0, 0).Format(http.TimeFormat))
 
 		if status == http.StatusRequestedRangeNotSatisfiable {

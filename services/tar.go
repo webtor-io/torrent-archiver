@@ -13,7 +13,10 @@ import (
 )
 
 type Tar struct {
-	ts       *TorrentStore
+	// files is the (possibly selection-filtered) list computed once by the
+	// handler; both write passes must consume the same slice so the
+	// size-only pass and the streaming pass stay byte-identical.
+	files    []file
 	infoHash string
 	path     string
 	baseURL  string
@@ -23,9 +26,9 @@ type Tar struct {
 	cl       *http.Client
 }
 
-func NewTar(ts *TorrentStore, cl *http.Client, infoHash string, path string, baseURL string, token string, apiKey string, suffix string) *Tar {
+func NewTar(cl *http.Client, files []file, infoHash string, path string, baseURL string, token string, apiKey string, suffix string) *Tar {
 	return &Tar{
-		ts:       ts,
+		files:    files,
 		infoHash: infoHash,
 		path:     path,
 		baseURL:  baseURL,
@@ -56,12 +59,8 @@ func (s *Tar) header(f file, withURL bool) *tarhttp.FileHeader {
 // between the size-only pass and the real content-fetching pass so both
 // produce byte-identical layout.
 func (s *Tar) write(ctx context.Context, tw *tarhttp.Writer, withURL bool) (contentSize int64, err error) {
-	files, err := generateFileList(s.ts, s.infoHash, s.path)
-	if err != nil {
-		return 0, errors.Wrap(err, "failed to generate file list")
-	}
 	fw := newFolderWalker(s.path)
-	for _, f := range files {
+	for _, f := range s.files {
 		err = fw.walk(f, func(name string) error {
 			log.Debugf("adding folder=%s", name)
 			return tw.CreateHeader(ctx, &tarhttp.FileHeader{

@@ -22,7 +22,10 @@ type file struct {
 }
 
 type Zip struct {
-	ts       *TorrentStore
+	// files is the (possibly selection-filtered) list computed once by the
+	// handler; Size and Write must consume the same slice so Content-Length
+	// always matches the streamed bytes.
+	files    []file
 	infoHash string
 	path     string
 	baseURL  string
@@ -36,9 +39,9 @@ func (s *Zip) ContentType() string {
 	return "application/zip"
 }
 
-func NewZip(ts *TorrentStore, cl *http.Client, infoHash string, path string, baseURL string, token string, apiKey string, suffix string) *Zip {
+func NewZip(cl *http.Client, files []file, infoHash string, path string, baseURL string, token string, apiKey string, suffix string) *Zip {
 	return &Zip{
-		ts:       ts,
+		files:    files,
 		infoHash: infoHash,
 		path:     path,
 		baseURL:  baseURL,
@@ -77,15 +80,11 @@ func (s *Zip) writeFile(ctx context.Context, zw *ziphttp.Writer, f file, fw *fol
 }
 
 func (s *Zip) Size(ctx context.Context) (size int64, err error) {
-	files, err := generateFileList(s.ts, s.infoHash, s.path)
-	if err != nil {
-		return
-	}
 	var buf bytes.Buffer
 
 	zw := ziphttp.NewWriter(&buf, 0, -1, nil)
 	fw := newFolderWalker(s.path)
-	for _, f := range files {
+	for _, f := range s.files {
 		err = fw.walk(f, func(name string) error {
 			return zw.CreateHeader(ctx, s.folderHeader(name, f.modified))
 		})
@@ -117,13 +116,9 @@ func (s *Zip) Write(ctx context.Context, w io.Writer, start int64, end int64) er
 	defer func(zw *ziphttp.Writer) {
 		_ = zw.Close()
 	}(zw)
-	log.Infof("start building archive for path=%s infoHash=%s", s.path, s.infoHash)
-	files, err := generateFileList(s.ts, s.infoHash, s.path)
-	if err != nil {
-		return errors.Wrap(err, "failed to generate file list")
-	}
+	log.Infof("start building archive for path=%s infoHash=%s files=%d", s.path, s.infoHash, len(s.files))
 	fw := newFolderWalker(s.path)
-	for _, f := range files {
+	for _, f := range s.files {
 		err := s.writeFile(ctx, zw, f, fw)
 		if err != nil {
 			return errors.Wrapf(err, "failed to write %s", f.path)

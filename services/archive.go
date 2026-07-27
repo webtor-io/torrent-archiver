@@ -17,18 +17,42 @@ type Archive interface {
 }
 
 // generateFileList returns the torrent's files under path, in torrent order.
-func generateFileList(ts *TorrentStore, infoHash string, path string) ([]file, error) {
+// A non-empty selected list additionally narrows the result to files that
+// exactly match a selected path or lie under a selected directory path.
+func generateFileList(ts *TorrentStore, infoHash string, path string, selected []string) ([]file, error) {
 	files, err := ts.Get(infoHash)
 	if err != nil {
 		return nil, err
 	}
+	// Prefixes are precomputed once: the p+"/" concat inside the per-file
+	// loop would otherwise allocate O(files × selected) strings.
+	prefixes := make([]string, len(selected))
+	for n, p := range selected {
+		prefixes[n] = p + "/"
+	}
 	var res []file
 	for _, f := range files {
-		if strings.HasPrefix(f.path, path) {
-			res = append(res, f)
+		// Boundary-aware prefix: a bare HasPrefix(f.path, path) would leak
+		// sibling entries sharing the name as a string prefix ("T/Season1"
+		// matching "T/Season10/e01.mkv").
+		if path != "" && f.path != path && !strings.HasPrefix(f.path, path+"/") {
+			continue
 		}
+		if len(selected) > 0 && !matchesAny(f.path, selected, prefixes) {
+			continue
+		}
+		res = append(res, f)
 	}
 	return res, nil
+}
+
+func matchesAny(path string, selected []string, prefixes []string) bool {
+	for n, p := range selected {
+		if path == p || strings.HasPrefix(path, prefixes[n]) {
+			return true
+		}
+	}
+	return false
 }
 
 // fileURL builds the authorized proxy URL a writer fetches file content from.
