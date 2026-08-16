@@ -38,7 +38,7 @@ func getLen(s *httptest.Server, begin int64, end int64, data []string) int64 {
 
 func getBytes(s *httptest.Server, begin int64, end int64, data []string) []byte {
 	var buf bytes.Buffer
-	zw := ziphttp.NewWriter(&buf, begin, end, s.Client())
+	zw := ziphttp.NewWriter(&buf, begin, end, s.Client(), nil)
 	for _, d := range data {
 		header := &ziphttp.FileHeader{
 			Name:               d,
@@ -155,7 +155,7 @@ func Test5GBZipping(t *testing.T) {
 	var buf bytes.Buffer
 	s := runGBServer(size)
 	defer s.Close()
-	zw := ziphttp.NewWriter(&buf, 0, -1, s.Client())
+	zw := ziphttp.NewWriter(&buf, 0, -1, s.Client(), nil)
 	header := &ziphttp.FileHeader{
 		Name:               fmt.Sprintf("%vGB", size),
 		URL:                s.URL,

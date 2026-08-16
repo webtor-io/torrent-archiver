@@ -28,6 +28,7 @@ type Web struct {
 	ln              net.Listener
 	ts              *TorrentStore
 	cl              *http.Client
+	crcs            *CRCStore
 }
 
 const (
@@ -38,12 +39,13 @@ const (
 	torrentProxyUrlFlag = "proxy-url"
 )
 
-func NewWeb(c *cli.Context, ts *TorrentStore, cl *http.Client) *Web {
+func NewWeb(c *cli.Context, ts *TorrentStore, cl *http.Client, crcs *CRCStore) *Web {
 	return &Web{
 		host:            c.String(webHostFlag),
 		port:            c.Int(webPortFlag),
 		ts:              ts,
 		cl:              cl,
+		crcs:            crcs,
 		apiKey:          c.String(apiKeyFlag),
 		apiSecret:       c.String(apiSecretFlag),
 		torrentProxyUrl: c.String(torrentProxyUrlFlag),
@@ -248,7 +250,7 @@ func (s *Web) Serve() error {
 		if strings.HasSuffix(strings.ToLower(name), ".tar") {
 			z = NewTar(s.cl, files, infoHash, path, baseURL, token, apiKey, suffix)
 		} else {
-			z = NewZip(s.cl, files, infoHash, path, baseURL, token, apiKey, suffix)
+			z = NewZip(s.cl, files, infoHash, path, baseURL, token, apiKey, suffix, s.crcs)
 		}
 
 		size, err := z.Size(r.Context())

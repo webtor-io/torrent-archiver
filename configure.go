@@ -15,6 +15,8 @@ func configure(app *cli.App) {
 	app.Flags = cs.RegisterPromFlags(app.Flags)
 	app.Flags = s.RegisterWebFlags(app.Flags)
 	app.Flags = s.RegisterTorrentStoreClientFlags(app.Flags)
+	app.Flags = s.RegisterCRCStoreFlags(app.Flags)
+	app.Flags = cs.RegisterRedisClientFlags(app.Flags)
 	app.Action = run
 }
 
@@ -51,8 +53,17 @@ func run(c *cli.Context) error {
 	// Setting HTTP Client
 	httpClient := http.DefaultClient
 
+	// Setting CRCStore (optional: correct checksums for resumed zip downloads)
+	var crcStore *s.CRCStore
+	if s.CRCCacheEnabled(c) {
+		redisClient := cs.NewRedisClient(c)
+		defer redisClient.Close()
+		crcStore = s.NewCRCStore(redisClient.Get())
+		log.Info("zip crc cache enabled")
+	}
+
 	// Setting WebService
-	web := s.NewWeb(c, torrentStore, httpClient)
+	web := s.NewWeb(c, torrentStore, httpClient, crcStore)
 	services = append(services, web)
 	defer web.Close()
 

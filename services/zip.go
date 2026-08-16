@@ -33,13 +33,16 @@ type Zip struct {
 	apiKey   string
 	suffix   string
 	cl       *http.Client
+	// crcs, when non-nil, lets resumed downloads keep correct central
+	// directory checksums (see ziphttp.CRCResumer).
+	crcs *CRCStore
 }
 
 func (s *Zip) ContentType() string {
 	return "application/zip"
 }
 
-func NewZip(cl *http.Client, files []file, infoHash string, path string, baseURL string, token string, apiKey string, suffix string) *Zip {
+func NewZip(cl *http.Client, files []file, infoHash string, path string, baseURL string, token string, apiKey string, suffix string, crcs *CRCStore) *Zip {
 	return &Zip{
 		files:    files,
 		infoHash: infoHash,
@@ -49,6 +52,7 @@ func NewZip(cl *http.Client, files []file, infoHash string, path string, baseURL
 		apiKey:   apiKey,
 		suffix:   suffix,
 		cl:       cl,
+		crcs:     crcs,
 	}
 }
 
@@ -59,7 +63,7 @@ func (s *Zip) folderHeader(name string, modified time.Time) *ziphttp.FileHeader 
 	}
 }
 
-func (s *Zip) writeFile(ctx context.Context, zw *ziphttp.Writer, f file, fw *folderWalker) error {
+func (s *Zip) writeFile(ctx context.Context, zw *ziphttp.Writer, f file, fw *folderWalker, preseed map[string]uint32) error {
 	err := fw.walk(f, func(name string) error {
 		log.Debugf("adding folder=%s", name)
 		return zw.CreateHeader(ctx, s.folderHeader(name, f.modified))
@@ -75,6 +79,11 @@ func (s *Zip) writeFile(ctx context.Context, zw *ziphttp.Writer, f file, fw *fol
 		URL:                fileURL(s.baseURL, s.infoHash, f.path, s.suffix, s.token, s.apiKey),
 		UncompressedSize64: f.size,
 		Modified:           f.modified,
+		CRCKey:             f.path,
+		// Cached full-file CRC pre-seeds the central directory entry for
+		// files outside this request's window; the writer overrides it
+		// whenever it observes the complete content itself.
+		CRC32: preseed[f.path],
 	}
 	return zw.CreateHeader(ctx, fh)
 }
@@ -82,7 +91,7 @@ func (s *Zip) writeFile(ctx context.Context, zw *ziphttp.Writer, f file, fw *fol
 func (s *Zip) Size(ctx context.Context) (size int64, err error) {
 	var buf bytes.Buffer
 
-	zw := ziphttp.NewWriter(&buf, 0, -1, nil)
+	zw := ziphttp.NewWriter(&buf, 0, -1, nil, nil)
 	fw := newFolderWalker(s.path)
 	for _, f := range s.files {
 		err = fw.walk(f, func(name string) error {
@@ -112,14 +121,31 @@ func (s *Zip) Size(ctx context.Context) (size int64, err error) {
 }
 
 func (s *Zip) Write(ctx context.Context, w io.Writer, start int64, end int64) error {
-	zw := ziphttp.NewWriter(w, start, end, s.cl)
+	var resumer ziphttp.CRCResumer
+	preseed := map[string]uint32{}
+	if s.crcs != nil {
+		r := s.crcs.Resumer(s.infoHash)
+		resumer = r
+		// The central directory is only ever emitted by windows reaching
+		// the archive's tail, and a window starting at 0 observes every
+		// checksum itself — so the cache lookup is needed just for
+		// resumed/ranged requests.
+		if start > 0 {
+			paths := make([]string, len(s.files))
+			for i, f := range s.files {
+				paths[i] = f.path
+			}
+			preseed = r.Preseed(ctx, paths)
+		}
+	}
+	zw := ziphttp.NewWriter(w, start, end, s.cl, resumer)
 	defer func(zw *ziphttp.Writer) {
 		_ = zw.Close()
 	}(zw)
 	log.Infof("start building archive for path=%s infoHash=%s files=%d", s.path, s.infoHash, len(s.files))
 	fw := newFolderWalker(s.path)
 	for _, f := range s.files {
-		err := s.writeFile(ctx, zw, f, fw)
+		err := s.writeFile(ctx, zw, f, fw, preseed)
 		if err != nil {
 			return errors.Wrapf(err, "failed to write %s", f.path)
 		}

@@ -10,8 +10,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"hash"
-	"hash/crc32"
 	"io"
 	"net/http"
 	"strings"
@@ -38,6 +36,8 @@ type Writer struct {
 	end         int64
 	current     int64
 	cl          *http.Client
+	crcs        CRCResumer
+	ckptEvery   int64
 
 	// testHookCloseSizeOffset if non-nil is called with the size
 	// of offset of the central directory at Close.
@@ -49,9 +49,19 @@ type header struct {
 	offset uint64
 }
 
-// NewWriter returns a new Writer writing a zip file to w.
-func NewWriter(w io.Writer, begin int64, end int64, cl *http.Client) *Writer {
-	return &Writer{begin: begin, end: end, cl: cl, w: bufio.NewWriter(w)}
+// NewWriter returns a new Writer writing a zip file to w. crcs may be nil:
+// then interrupted-and-resumed windows simply emit CRC32=0 for files whose
+// full checksum this pass cannot observe.
+func NewWriter(w io.Writer, begin int64, end int64, cl *http.Client, crcs CRCResumer) *Writer {
+	return &Writer{begin: begin, end: end, cl: cl, crcs: crcs, ckptEvery: DefaultCRCCheckpointInterval, w: bufio.NewWriter(w)}
+}
+
+// SetCRCCheckpointInterval overrides how often the running CRC state is
+// persisted while streaming (test hook; the default suits production).
+func (w *Writer) SetCRCCheckpointInterval(n int64) {
+	if n > 0 {
+		w.ckptEvery = n
+	}
 }
 
 // Flush flushes any buffered data to the underlying writer.
@@ -369,16 +379,21 @@ func (w *Writer) CreateHeader(ctx context.Context, fh *FileHeader) error {
 	}
 	// If we're creating a directory, fw is nil.
 	if h.URL != "" {
-		cw := &crcWriter{
-			w:     fw,
-			crc32: crc32.NewIEEE(),
-		}
-		err := w.writeFile(ctx, fh, cw)
+		crc, known, err := w.writeFile(ctx, fh, fw)
 		if err != nil {
 			return err
 		}
-		h.CRC32 = cw.crc32.Sum32()
-		//fmt.Printf("Write content for file=%v crc32=%v\n", h.Name, h.CRC32)
+		// The central directory must never carry a partially-computed
+		// checksum: either the full-file CRC observed (or re-anchored)
+		// by this pass, or whatever the caller pre-seeded from cache
+		// (0 when unknown). Extractors treat 0 as "no checksum", while
+		// a partial value reads as a mismatch and fails the archive.
+		if known {
+			h.CRC32 = crc
+			if w.crcs != nil && fh.CRCKey != "" {
+				w.crcs.PutCRC(ctx, fh.CRCKey, crc)
+			}
+		}
 	}
 	w.current += int64(h.UncompressedSize64)
 	if fh.hasDataDescriptor() {
@@ -439,44 +454,121 @@ func (w *Writer) writeDescriptor(h *FileHeader, fw io.Writer) error {
 	return err
 }
 
-type crcWriter struct {
-	w     io.Writer
-	crc32 hash.Hash32
-}
-
-func (w *crcWriter) Write(p []byte) (int, error) {
-	w.crc32.Write(p)
-	return w.w.Write(p)
-}
-
-func (w *Writer) writeFile(ctx context.Context, h *FileHeader, fw io.Writer) error {
-	partial, skip, begin, end := w.getRange(int64(h.UncompressedSize64))
+// writeFile streams the in-window part of the file content to fw and
+// tracks its CRC32. crc is valid only when known is true: the running
+// state was anchored at byte 0 (directly, via a stored checkpoint, or by
+// re-reading a bounded gap upstream) AND the file completed inside this
+// window. A cut-short anchored pass persists a checkpoint instead, so the
+// next resume can finish the job.
+func (w *Writer) writeFile(ctx context.Context, h *FileHeader, fw io.Writer) (crc uint32, known bool, err error) {
+	size := int64(h.UncompressedSize64)
+	partial, skip, begin, end := w.getRange(size)
 	if skip {
-		return nil
+		return 0, false, nil
 	}
+	state, anchored := w.seedCRC(ctx, h, begin)
 	req, err := http.NewRequestWithContext(ctx, "GET", h.URL, nil)
 	if err != nil {
-		return err
+		return 0, false, err
 	}
 	if partial {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", begin, end-1))
 	}
 	res, err := w.cl.Do(req)
 	if err != nil {
-		return err
+		return 0, false, err
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
 	}(res.Body)
 	if res.StatusCode >= 300 {
-		return errors.Errorf("got bad http code from url=%v code=%v", h.URL, res.StatusCode)
+		return 0, false, errors.Errorf("got bad http code from url=%v code=%v", h.URL, res.StatusCode)
 	}
-	_, err = io.Copy(fw, res.Body)
-	//fmt.Printf("Write content for file=%v len=%v url=%v begin=%v end=%v size=%v\n", h.Name, h.UncompressedSize64, h.URL, begin, end, n)
+	var tracker *crcTracker
+	src := io.Reader(res.Body)
+	if anchored {
+		tracker = newCRCTracker(ctx, w.crcs, h.CRCKey, state, begin, w.ckptEvery)
+		src = io.TeeReader(res.Body, tracker)
+	}
+	n, err := io.Copy(fw, src)
 	if err != nil {
-		return err
+		return 0, false, err
 	}
-	return nil
+	if tracker == nil {
+		return 0, false, nil
+	}
+	// A short upstream body would silently shift every later CRC state;
+	// treat it as unknown rather than trust the count.
+	if n != end-begin {
+		return 0, false, nil
+	}
+	if end == size {
+		return tracker.state, true, nil
+	}
+	if w.crcs != nil && h.CRCKey != "" {
+		w.crcs.PutCheckpoint(ctx, h.CRCKey, end, tracker.state)
+	}
+	return 0, false, nil
+}
+
+// seedCRC derives the running CRC32 state for the file content prefix
+// [0, begin), so the streamed window continues an anchored computation.
+// A stored checkpoint below begin is topped up by re-reading the gap from
+// upstream, capped by MaxCRCGapFetch; no checkpoint counts as the implicit
+// (offset 0, state 0) anchor, which also makes near-start resumes work
+// against a cold cache.
+func (w *Writer) seedCRC(ctx context.Context, h *FileHeader, begin int64) (state uint32, anchored bool) {
+	if begin == 0 {
+		return 0, true
+	}
+	off := int64(0)
+	if w.crcs != nil && h.CRCKey != "" {
+		if o, s, ok := w.crcs.GetCheckpoint(ctx, h.CRCKey, begin); ok {
+			off, state = o, s
+		}
+	}
+	if off == begin {
+		return state, true
+	}
+	if begin-off > MaxCRCGapFetch {
+		return 0, false
+	}
+	state, err := w.fetchCRCGap(ctx, h, off, begin, state)
+	if err != nil {
+		return 0, false
+	}
+	return state, true
+}
+
+// fetchCRCGap advances the CRC state over file bytes [off, begin) by
+// reading them from upstream without emitting them to the client.
+func (w *Writer) fetchCRCGap(ctx context.Context, h *FileHeader, off int64, begin int64, state uint32) (uint32, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", h.URL, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, begin-1))
+	res, err := w.cl.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(res.Body)
+	if res.StatusCode >= 300 {
+		return 0, errors.Errorf("got bad http code from url=%v code=%v", h.URL, res.StatusCode)
+	}
+	t := newCRCTracker(ctx, w.crcs, h.CRCKey, state, off, w.ckptEvery)
+	n, err := t.discard(res.Body)
+	if err != nil {
+		return 0, err
+	}
+	// An upstream that ignored Range (200 with the whole file) or cut the
+	// body short would corrupt the anchor; only the exact gap length counts.
+	if n != begin-off {
+		return 0, errors.Errorf("crc gap fetch length mismatch for url=%v want=%d got=%d", h.URL, begin-off, n)
+	}
+	return t.state, nil
 }
 func (w *Writer) writeHeader(h *FileHeader) error {
 	bytes, err := w.getHeader(h)

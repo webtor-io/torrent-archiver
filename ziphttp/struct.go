@@ -130,6 +130,12 @@ type FileHeader struct {
 	ModifiedTime uint16 // Deprecated: Legacy MS-DOS date; use Modified instead.
 	ModifiedDate uint16 // Deprecated: Legacy MS-DOS time; use Modified instead.
 
+	// CRCKey identifies this file's content for CRCResumer lookups
+	// (torrent-scoped path, not the archive-relative Name, so archives
+	// rooted at different directories share the same knowledge). Empty
+	// disables CRC persistence for the file. Never serialized.
+	CRCKey string
+
 	CRC32              uint32
 	CompressedSize     uint32 // Deprecated: Use CompressedSize64 instead.
 	UncompressedSize   uint32 // Deprecated: Use UncompressedSize64 instead.
