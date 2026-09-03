@@ -14,6 +14,22 @@ value-as-folder are included. The selection participates in the `ETag`, a
 selection matching no files yields `404`, and more than 1024 values yield
 `400`.
 
+## Streaming behaviour
+
+The archive is a strictly sequential stream, but upstream reads are not: while
+the current file streams to the client, the next `--prefetch-depth` files
+(default 4) that are small enough (`--prefetch-max-file-bytes`, default 8 MiB)
+are fetched into memory, within `--prefetch-budget-bytes` (default 64 MiB) per
+request. Big files are never prefetched — they stream as before, and
+torrent-http-proxy caps distinct big files per session at five, a budget the
+user's own player shares. `PREFETCH_DEPTH=0` turns prefetching off.
+
+Before blocking on an upstream body the writer flushes everything it has —
+the entry's header included — so a slow swarm never looks like a silent
+connection to the client. Neither mechanism outlives the request: a client
+that disconnects cancels its prefetches; keeping the swarm working across a
+client's retries is torrent-web-seeder's job (`READER_LINGER`).
+
 # Usage
 
 ```

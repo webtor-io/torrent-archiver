@@ -1,11 +1,14 @@
 package main
 
 import (
+	"net"
+	"net/http"
+	"time"
+
 	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 	cs "github.com/webtor-io/common-services"
 	s "github.com/webtor-io/torrent-archiver/services"
-	"net/http"
 )
 
 func configure(app *cli.App) {
@@ -16,6 +19,7 @@ func configure(app *cli.App) {
 	app.Flags = s.RegisterWebFlags(app.Flags)
 	app.Flags = s.RegisterTorrentStoreClientFlags(app.Flags)
 	app.Flags = s.RegisterCRCStoreFlags(app.Flags)
+	app.Flags = s.RegisterPrefetchFlags(app.Flags)
 	app.Flags = cs.RegisterRedisClientFlags(app.Flags)
 	app.Action = run
 }
@@ -50,8 +54,23 @@ func run(c *cli.Context) error {
 	// Setting TorrentStore
 	torrentStore := s.NewTorrentStore(torrentStoreClient)
 
-	// Setting HTTP Client
-	httpClient := http.DefaultClient
+	// Setting HTTP Client. Upstream is torrent-http-proxy; with prefetching
+	// several bodies are open per archive at once, so the idle pool must hold
+	// more than DefaultTransport's two connections per host. No response
+	// header timeout on purpose: a cold swarm legitimately takes long to
+	// produce the first byte, and cutting it would recreate the very
+	// retry loop the prefetcher exists to avoid.
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			MaxIdleConns:          128,
+			MaxIdleConnsPerHost:   32,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: time.Second,
+		},
+	}
 
 	// Setting CRCStore (optional: correct checksums for resumed zip downloads)
 	var crcStore *s.CRCStore

@@ -9,13 +9,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/pkg/errors"
+	"github.com/webtor-io/torrent-archiver/internal/fetch"
 	"github.com/webtor-io/torrent-archiver/internal/rangeclip"
 )
 
@@ -35,7 +35,7 @@ type Writer struct {
 	begin       int64
 	end         int64
 	current     int64
-	cl          *http.Client
+	fetcher     fetch.Fetcher
 	crcs        CRCResumer
 	ckptEvery   int64
 
@@ -53,7 +53,16 @@ type header struct {
 // then interrupted-and-resumed windows simply emit CRC32=0 for files whose
 // full checksum this pass cannot observe.
 func NewWriter(w io.Writer, begin int64, end int64, cl *http.Client, crcs CRCResumer) *Writer {
-	return &Writer{begin: begin, end: end, cl: cl, crcs: crcs, ckptEvery: DefaultCRCCheckpointInterval, w: bufio.NewWriter(w)}
+	return &Writer{begin: begin, end: end, fetcher: fetch.HTTP{Client: cl}, crcs: crcs, ckptEvery: DefaultCRCCheckpointInterval, w: bufio.NewWriter(w)}
+}
+
+// SetFetcher replaces the plain HTTP fetcher — the archiver installs a
+// prefetching one so upcoming small files are already in memory when the
+// sequential stream reaches them.
+func (w *Writer) SetFetcher(f fetch.Fetcher) {
+	if f != nil {
+		w.fetcher = f
+	}
 }
 
 // SetCRCCheckpointInterval overrides how often the running CRC state is
@@ -467,28 +476,30 @@ func (w *Writer) writeFile(ctx context.Context, h *FileHeader, fw io.Writer) (cr
 		return 0, false, nil
 	}
 	state, anchored := w.seedCRC(ctx, h, begin)
-	req, err := http.NewRequestWithContext(ctx, "GET", h.URL, nil)
-	if err != nil {
+	// Flush what precedes the body (this entry's local header included) so
+	// the client sees bytes before we block on upstream: download managers
+	// give up on 30 s of silence, and a slow swarm must not look like one.
+	if err := w.w.Flush(); err != nil {
 		return 0, false, err
 	}
-	if partial {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", begin, end-1))
+	// Whole file → no Range header; a window cut on either side → an
+	// explicit closed range, exactly as before the fetcher seam.
+	fetchEnd := end
+	if !partial {
+		fetchEnd = -1
 	}
-	res, err := w.cl.Do(req)
+	body, err := w.fetcher.Fetch(ctx, h.URL, begin, fetchEnd)
 	if err != nil {
 		return 0, false, err
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
-	}(res.Body)
-	if res.StatusCode >= 300 {
-		return 0, false, errors.Errorf("got bad http code from url=%v code=%v", h.URL, res.StatusCode)
-	}
+	}(body)
 	var tracker *crcTracker
-	src := io.Reader(res.Body)
+	src := io.Reader(body)
 	if anchored {
 		tracker = newCRCTracker(ctx, w.crcs, h.CRCKey, state, begin, w.ckptEvery)
-		src = io.TeeReader(res.Body, tracker)
+		src = io.TeeReader(body, tracker)
 	}
 	n, err := io.Copy(fw, src)
 	if err != nil {
@@ -543,23 +554,15 @@ func (w *Writer) seedCRC(ctx context.Context, h *FileHeader, begin int64) (state
 // fetchCRCGap advances the CRC state over file bytes [off, begin) by
 // reading them from upstream without emitting them to the client.
 func (w *Writer) fetchCRCGap(ctx context.Context, h *FileHeader, off int64, begin int64, state uint32) (uint32, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", h.URL, nil)
-	if err != nil {
-		return 0, err
-	}
-	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", off, begin-1))
-	res, err := w.cl.Do(req)
+	body, err := w.fetcher.Fetch(ctx, h.URL, off, begin)
 	if err != nil {
 		return 0, err
 	}
 	defer func(Body io.ReadCloser) {
 		_ = Body.Close()
-	}(res.Body)
-	if res.StatusCode >= 300 {
-		return 0, errors.Errorf("got bad http code from url=%v code=%v", h.URL, res.StatusCode)
-	}
+	}(body)
 	t := newCRCTracker(ctx, w.crcs, h.CRCKey, state, off, w.ckptEvery)
-	n, err := t.discard(res.Body)
+	n, err := t.discard(body)
 	if err != nil {
 		return 0, err
 	}

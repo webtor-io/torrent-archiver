@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/webtor-io/torrent-archiver/internal/fetch"
+
 	"github.com/webtor-io/torrent-archiver/ziphttp"
 
 	"github.com/pkg/errors"
@@ -36,6 +38,9 @@ type Zip struct {
 	// crcs, when non-nil, lets resumed downloads keep correct central
 	// directory checksums (see ziphttp.CRCResumer).
 	crcs *CRCStore
+	// prefetch, when enabled, reads upcoming small files ahead of the
+	// stream (see Prefetcher); zero value = off.
+	prefetch PrefetchConfig
 }
 
 func (s *Zip) ContentType() string {
@@ -88,6 +93,9 @@ func (s *Zip) writeFile(ctx context.Context, zw *ziphttp.Writer, f file, fw *fol
 	return zw.CreateHeader(ctx, fh)
 }
 
+// SetPrefetch enables read-ahead of upcoming small files for Write.
+func (s *Zip) SetPrefetch(cfg PrefetchConfig) { s.prefetch = cfg }
+
 func (s *Zip) Size(ctx context.Context) (size int64, err error) {
 	var buf bytes.Buffer
 
@@ -139,6 +147,9 @@ func (s *Zip) Write(ctx context.Context, w io.Writer, start int64, end int64) er
 		}
 	}
 	zw := ziphttp.NewWriter(w, start, end, s.cl, resumer)
+	if pf := NewPrefetcher(fetch.HTTP{Client: s.cl}, s.prefetch, planFor(s.files, s.baseURL, s.infoHash, s.suffix, s.token, s.apiKey)); pf != nil {
+		zw.SetFetcher(pf)
+	}
 	defer func(zw *ziphttp.Writer) {
 		_ = zw.Close()
 	}(zw)

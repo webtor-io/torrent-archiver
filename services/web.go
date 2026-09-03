@@ -29,6 +29,7 @@ type Web struct {
 	ts              *TorrentStore
 	cl              *http.Client
 	crcs            *CRCStore
+	prefetch        PrefetchConfig
 }
 
 const (
@@ -49,6 +50,7 @@ func NewWeb(c *cli.Context, ts *TorrentStore, cl *http.Client, crcs *CRCStore) *
 		apiKey:          c.String(apiKeyFlag),
 		apiSecret:       c.String(apiSecretFlag),
 		torrentProxyUrl: c.String(torrentProxyUrlFlag),
+		prefetch:        PrefetchConfigFromCLI(c),
 	}
 }
 
@@ -248,9 +250,13 @@ func (s *Web) Serve() error {
 		// proxy chain stays format-agnostic.
 		var z Archive
 		if strings.HasSuffix(strings.ToLower(name), ".tar") {
-			z = NewTar(s.cl, files, infoHash, path, baseURL, token, apiKey, suffix)
+			t := NewTar(s.cl, files, infoHash, path, baseURL, token, apiKey, suffix)
+			t.SetPrefetch(s.prefetch)
+			z = t
 		} else {
-			z = NewZip(s.cl, files, infoHash, path, baseURL, token, apiKey, suffix, s.crcs)
+			zp := NewZip(s.cl, files, infoHash, path, baseURL, token, apiKey, suffix, s.crcs)
+			zp.SetPrefetch(s.prefetch)
+			z = zp
 		}
 
 		size, err := z.Size(r.Context())

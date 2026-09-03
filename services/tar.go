@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/webtor-io/torrent-archiver/internal/fetch"
+
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"github.com/webtor-io/torrent-archiver/tarhttp"
@@ -24,7 +26,13 @@ type Tar struct {
 	apiKey   string
 	suffix   string
 	cl       *http.Client
+	// prefetch, when enabled, reads upcoming small files ahead of the
+	// stream (see Prefetcher); zero value = off.
+	prefetch PrefetchConfig
 }
+
+// SetPrefetch enables read-ahead of upcoming small files for Write.
+func (s *Tar) SetPrefetch(cfg PrefetchConfig) { s.prefetch = cfg }
 
 func NewTar(cl *http.Client, files []file, infoHash string, path string, baseURL string, token string, apiKey string, suffix string) *Tar {
 	return &Tar{
@@ -95,6 +103,9 @@ func (s *Tar) Size(ctx context.Context) (int64, error) {
 
 func (s *Tar) Write(ctx context.Context, w io.Writer, start int64, end int64) error {
 	tw := tarhttp.NewWriter(w, start, end, s.cl)
+	if pf := NewPrefetcher(fetch.HTTP{Client: s.cl}, s.prefetch, planFor(s.files, s.baseURL, s.infoHash, s.suffix, s.token, s.apiKey)); pf != nil {
+		tw.SetFetcher(pf)
+	}
 	log.Infof("start building tar archive for path=%s infoHash=%s", s.path, s.infoHash)
 	if _, err := s.write(ctx, tw, true); err != nil {
 		return err

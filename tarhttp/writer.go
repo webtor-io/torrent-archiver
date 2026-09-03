@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/webtor-io/torrent-archiver/internal/fetch"
 	"github.com/webtor-io/torrent-archiver/internal/rangeclip"
 )
 
@@ -41,12 +42,21 @@ type Writer struct {
 	begin   int64
 	end     int64
 	current int64
-	cl      *http.Client
+	fetcher fetch.Fetcher
 	closed  bool
 }
 
 func NewWriter(w io.Writer, begin int64, end int64, cl *http.Client) *Writer {
-	return &Writer{begin: begin, end: end, cl: cl, w: bufio.NewWriter(w)}
+	return &Writer{begin: begin, end: end, fetcher: fetch.HTTP{Client: cl}, w: bufio.NewWriter(w)}
+}
+
+// SetFetcher replaces the plain HTTP fetcher — the archiver installs a
+// prefetching one so upcoming small files are already in memory when the
+// sequential stream reaches them.
+func (w *Writer) SetFetcher(f fetch.Fetcher) {
+	if f != nil {
+		w.fetcher = f
+	}
 }
 
 // getRange clips a chunk of length l at the current logical offset against
@@ -104,24 +114,25 @@ func (w *Writer) writeContent(ctx context.Context, fh *FileHeader) error {
 	defer func() {
 		w.current += size
 	}()
-	req, err := http.NewRequestWithContext(ctx, "GET", fh.URL, nil)
-	if err != nil {
+	// Everything written so far (this entry's header included) reaches the
+	// client before we block on upstream: a slow swarm must not look like a
+	// silent connection — download managers give up on 30 s of silence.
+	if err := w.w.Flush(); err != nil {
 		return err
 	}
-	if partial {
-		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", begin, end-1))
+	// Whole file → no Range header (begin 0, end -1); a window cut on
+	// either side → an explicit closed range, exactly as before the seam.
+	if !partial {
+		end = -1
 	}
-	res, err := w.cl.Do(req)
+	body, err := w.fetcher.Fetch(ctx, fh.URL, begin, end)
 	if err != nil {
 		return err
 	}
 	defer func(body io.ReadCloser) {
 		_ = body.Close()
-	}(res.Body)
-	if res.StatusCode >= 300 {
-		return errors.Errorf("got bad http code from url=%v code=%v", fh.URL, res.StatusCode)
-	}
-	_, err = io.Copy(w.w, res.Body)
+	}(body)
+	_, err = io.Copy(w.w, body)
 	return err
 }
 
