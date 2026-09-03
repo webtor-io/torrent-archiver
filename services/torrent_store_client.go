@@ -2,8 +2,9 @@ package services
 
 import (
 	"fmt"
-	"google.golang.org/grpc/credentials/insecure"
 	"sync"
+
+	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
