@@ -27,6 +27,25 @@ func NewTorrentStore(ts *TorrentStoreClient) *TorrentStore {
 	}
 }
 
+// isPadFile reports whether f is BEP 47 padding: filler the encoder put
+// between files so each real file starts on a piece boundary. It is not
+// content and does not belong in an archive. The "p" attribute when set,
+// else the conventional names (".pad/<n>" from libtorrent/qBittorrent,
+// "_____padding_file_*" from BitComet).
+func isPadFile(f *metainfo.FileInfo) bool {
+	if strings.Contains(f.Attr, "p") {
+		return true
+	}
+	p := f.Path
+	if len(f.PathUtf8) > 0 {
+		p = f.PathUtf8
+	}
+	if len(p) == 0 {
+		return false
+	}
+	return p[0] == ".pad" || strings.HasPrefix(p[len(p)-1], "_____padding_file")
+}
+
 func getPath(info *metainfo.Info, f *metainfo.FileInfo) []string {
 	name := info.Name
 	if info.NameUtf8 != "" {
@@ -62,6 +81,9 @@ func (s *TorrentStore) get(ctx context.Context, h string) ([]file, error) {
 	}
 	var res []file
 	for _, f := range info.UpvertedFiles() {
+		if isPadFile(&f) {
+			continue
+		}
 		p := getPath(&info, &f)
 		path := strings.Join(p, "/")
 		res = append(res, file{
