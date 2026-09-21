@@ -30,6 +30,23 @@ connection to the client. Neither mechanism outlives the request: a client
 that disconnects cancels its prefetches; keeping the swarm working across a
 client's retries is torrent-web-seeder's job (`READER_LINGER`).
 
+## Metrics
+
+Prometheus metrics are served on the prom port (`--prom-port`, see
+`--help`) under the `archiver_` namespace:
+
+| Metric | Labels | Meaning |
+|---|---|---|
+| `archiver_archives_total` | `format` (zip/tar), `outcome` | One per archive request that reached the file list stage. `ok`, `client_gone` (client hung up — most aborted downloads, not a fault), `upstream_error` (proxy/seeder GET or body failed), `error` (torrent store, size). |
+| `archiver_archives_active` | | Requests in flight; each may hold up to the prefetch budget in memory. |
+| `archiver_bytes_total` | `format` | Bytes written to clients, counted as they leave. |
+| `archiver_archive_duration_seconds` | `format` | Request wall time, all outcomes; the 30 s edge is the download-manager timeout. |
+| `archiver_file_fetch_duration_seconds` | | Upstream GET time to headers (swarm time to first byte), prefetches included. |
+| `archiver_file_fetches_total` | `outcome` | Upstream GETs: `ok`, `canceled` (client gone), `error`. |
+
+Client disconnects are logged at info level, everything else at error, so
+`level=error` in logs tracks the `upstream_error` + `error` series.
+
 # Usage
 
 ```

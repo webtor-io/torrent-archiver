@@ -147,9 +147,7 @@ func (s *Zip) Write(ctx context.Context, w io.Writer, start int64, end int64) er
 		}
 	}
 	zw := ziphttp.NewWriter(w, start, end, s.cl, resumer)
-	if pf := NewPrefetcher(fetch.HTTP{Client: s.cl}, s.prefetch, planFor(s.files, s.baseURL, s.infoHash, s.suffix, s.token, s.apiKey)); pf != nil {
-		zw.SetFetcher(pf)
-	}
+	zw.SetFetcher(newFetcher(fetch.HTTP{Client: s.cl}, s.prefetch, planFor(s.files, s.baseURL, s.infoHash, s.suffix, s.token, s.apiKey)))
 	defer func(zw *ziphttp.Writer) {
 		_ = zw.Close()
 	}(zw)

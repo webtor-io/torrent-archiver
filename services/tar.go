@@ -103,9 +103,7 @@ func (s *Tar) Size(ctx context.Context) (int64, error) {
 
 func (s *Tar) Write(ctx context.Context, w io.Writer, start int64, end int64) error {
 	tw := tarhttp.NewWriter(w, start, end, s.cl)
-	if pf := NewPrefetcher(fetch.HTTP{Client: s.cl}, s.prefetch, planFor(s.files, s.baseURL, s.infoHash, s.suffix, s.token, s.apiKey)); pf != nil {
-		tw.SetFetcher(pf)
-	}
+	tw.SetFetcher(newFetcher(fetch.HTTP{Client: s.cl}, s.prefetch, planFor(s.files, s.baseURL, s.infoHash, s.suffix, s.token, s.apiKey)))
 	log.Infof("start building tar archive for path=%s infoHash=%s", s.path, s.infoHash)
 	if _, err := s.write(ctx, tw, true); err != nil {
 		return err

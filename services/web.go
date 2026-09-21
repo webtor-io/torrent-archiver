@@ -26,7 +26,7 @@ type Web struct {
 	apiSecret       string
 	torrentProxyUrl string
 	ln              net.Listener
-	ts              *TorrentStore
+	ts              fileSource
 	cl              *http.Client
 	crcs            *CRCStore
 	prefetch        PrefetchConfig
@@ -168,6 +168,16 @@ func parseRange(rng string, size int64) (begin int64, end int64, status int) {
 	return b, e, http.StatusPartialContent
 }
 
+// archiveFormat maps the requested filename to the archive format. Format
+// is carried by the extension (rest-api names the archive <dir>.zip or
+// <dir>.tar), so the proxy chain stays format-agnostic; zip is the default.
+func archiveFormat(name string) string {
+	if strings.HasSuffix(strings.ToLower(name), ".tar") {
+		return formatTar
+	}
+	return formatZip
+}
+
 func (s *Web) Serve() error {
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
 	ln, err := net.Listen("tcp", addr)
@@ -176,137 +186,161 @@ func (s *Web) Serve() error {
 	}
 	s.ln = ln
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		infoHash := r.Header.Get("X-Info-Hash")
-		if infoHash == "" && r.URL.Query().Get("infohash") != "" {
-			infoHash = strings.ToLower(r.URL.Query().Get("infohash"))
-		}
-
-		if infoHash == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		path := r.Header.Get("X-Origin-Path")
-		if path == "" {
-			path = "/"
-		}
-		suffix := ""
-		path = strings.TrimLeft(path, "/")
-		token := r.Header.Get("X-Token")
-		if token == "" && s.apiSecret != "" {
-			t := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{})
-			token, err = t.SignedString([]byte(s.apiSecret))
-			if err != nil {
-				w.WriteHeader(http.StatusBadRequest)
-				return
-			}
-		}
-		if token == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		apiKey := r.Header.Get("X-Api-Key")
-		if apiKey == "" && s.apiKey != "" {
-			apiKey = s.apiKey
-		}
-		if apiKey == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		baseURL := r.Header.Get("X-Proxy-Url")
-		if baseURL == "" && s.torrentProxyUrl != "" {
-			baseURL = s.torrentProxyUrl
-		}
-		if baseURL == "" {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		selected, ok := parseSelectedPaths(r.URL.Query()["paths"])
-		if !ok {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		name := filepath.Base(r.URL.Path)
-		log.Infof("got request with infoHash=%s path=%s name=%s selected=%d", infoHash, path, name, len(selected))
-
-		// The file list is computed exactly once per request and shared by
-		// Size and Write — resumable downloads issue many Range requests
-		// and must never pay (or drift between) repeated filter passes.
-		files, err := generateFileList(s.ts, infoHash, path, selected)
-		if err != nil {
-			log.WithError(err).Error("failed to generate file list")
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-		// A selection that intersects the torrent to nothing (stale link,
-		// mistyped path) must not silently produce an empty archive.
-		if len(selected) > 0 && len(files) == 0 {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-
-		// Format is carried by the requested filename extension
-		// (rest-api names the archive <dir>.zip or <dir>.tar), so the
-		// proxy chain stays format-agnostic.
-		var z Archive
-		if strings.HasSuffix(strings.ToLower(name), ".tar") {
-			t := NewTar(s.cl, files, infoHash, path, baseURL, token, apiKey, suffix)
-			t.SetPrefetch(s.prefetch)
-			z = t
-		} else {
-			zp := NewZip(s.cl, files, infoHash, path, baseURL, token, apiKey, suffix, s.crcs)
-			zp.SetPrefetch(s.prefetch)
-			z = zp
-		}
-
-		size, err := z.Size(r.Context())
-
-		if err != nil {
-			log.WithError(err).Error("failed to get archive size")
-			w.WriteHeader(http.StatusInternalServerError)
-			return
-		}
-
-		begin, end, status := parseRange(r.Header.Get("Range"), size)
-
-		w.Header().Set("Content-Type", z.ContentType())
-		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", name))
-		w.Header().Set("Accept-Ranges", "bytes")
-		// Selection participates in the ETag so differently-filtered
-		// archives of the same path never validate against each other;
-		// the no-selection ETag stays byte-identical to the old scheme.
-		etagSrc := infoHash + path
-		if len(selected) > 0 {
-			etagSrc += "?paths=" + strings.Join(selected, "\x00")
-		}
-		w.Header().Set("Etag", fmt.Sprintf("\"%x\"", sha1.Sum([]byte(etagSrc))))
-		w.Header().Set("Last-Modified", time.Unix(0, 0).Format(http.TimeFormat))
-
-		if status == http.StatusRequestedRangeNotSatisfiable {
-			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", size))
-			w.WriteHeader(status)
-			return
-		}
-		w.Header().Set("Content-Length", fmt.Sprintf("%v", end-begin+1))
-		if status == http.StatusPartialContent {
-			w.Header().Set("Content-Range", fmt.Sprintf("bytes %v-%v/%v", begin, end, size))
-			w.WriteHeader(status)
-		}
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-
-		err = z.Write(r.Context(), w, begin, end)
-		if err != nil {
-			// Response is already committed by the Flush above (status + headers
-			// sent, body streaming), so we can't change the status code here —
-			// a WriteHeader call now only logs "superfluous response.WriteHeader".
-			log.WithError(err).Error("failed to write archive")
-			return
-		}
-	})
+	mux.Handle("/", s)
 	log.Infof("serving Web at %v", addr)
 	return http.Serve(ln, mux)
+}
+
+// ServeHTTP is the archive endpoint. It is a method rather than a closure
+// inside Serve so tests can drive it through httptest without a listener.
+func (s *Web) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	var err error
+	infoHash := r.Header.Get("X-Info-Hash")
+	if infoHash == "" && r.URL.Query().Get("infohash") != "" {
+		infoHash = strings.ToLower(r.URL.Query().Get("infohash"))
+	}
+
+	if infoHash == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	path := r.Header.Get("X-Origin-Path")
+	if path == "" {
+		path = "/"
+	}
+	suffix := ""
+	path = strings.TrimLeft(path, "/")
+	token := r.Header.Get("X-Token")
+	if token == "" && s.apiSecret != "" {
+		t := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{})
+		token, err = t.SignedString([]byte(s.apiSecret))
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+	}
+	if token == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	apiKey := r.Header.Get("X-Api-Key")
+	if apiKey == "" && s.apiKey != "" {
+		apiKey = s.apiKey
+	}
+	if apiKey == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	baseURL := r.Header.Get("X-Proxy-Url")
+	if baseURL == "" && s.torrentProxyUrl != "" {
+		baseURL = s.torrentProxyUrl
+	}
+	if baseURL == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	selected, ok := parseSelectedPaths(r.URL.Query()["paths"])
+	if !ok {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	name := filepath.Base(r.URL.Path)
+	format := archiveFormat(name)
+	log.Infof("got request with infoHash=%s path=%s name=%s selected=%d", infoHash, path, name, len(selected))
+
+	// From here the request is an archive attempt and is accounted
+	// for: the gauge spans the store lookup and Size as well, since
+	// the request already holds resources during them. The 404/416
+	// exits below are client-side mistakes, not archive outcomes,
+	// and stay out of archives_total.
+	started := time.Now()
+	archivesActive.Inc()
+	defer archivesActive.Dec()
+
+	// The file list is computed exactly once per request and shared by
+	// Size and Write — resumable downloads issue many Range requests
+	// and must never pay (or drift between) repeated filter passes.
+	files, err := generateFileList(s.ts, infoHash, path, selected)
+	if err != nil {
+		log.WithError(err).Error("failed to generate file list")
+		recordArchive(format, outcomeError, started)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	// A selection that intersects the torrent to nothing (stale link,
+	// mistyped path) must not silently produce an empty archive.
+	if len(selected) > 0 && len(files) == 0 {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	var z Archive
+	if format == formatTar {
+		t := NewTar(s.cl, files, infoHash, path, baseURL, token, apiKey, suffix)
+		t.SetPrefetch(s.prefetch)
+		z = t
+	} else {
+		zp := NewZip(s.cl, files, infoHash, path, baseURL, token, apiKey, suffix, s.crcs)
+		zp.SetPrefetch(s.prefetch)
+		z = zp
+	}
+
+	size, err := z.Size(r.Context())
+
+	if err != nil {
+		log.WithError(err).Error("failed to get archive size")
+		recordArchive(format, outcomeError, started)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	begin, end, status := parseRange(r.Header.Get("Range"), size)
+
+	w.Header().Set("Content-Type", z.ContentType())
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", name))
+	w.Header().Set("Accept-Ranges", "bytes")
+	// Selection participates in the ETag so differently-filtered
+	// archives of the same path never validate against each other;
+	// the no-selection ETag stays byte-identical to the old scheme.
+	etagSrc := infoHash + path
+	if len(selected) > 0 {
+		etagSrc += "?paths=" + strings.Join(selected, "\x00")
+	}
+	w.Header().Set("Etag", fmt.Sprintf("\"%x\"", sha1.Sum([]byte(etagSrc))))
+	w.Header().Set("Last-Modified", time.Unix(0, 0).Format(http.TimeFormat))
+
+	if status == http.StatusRequestedRangeNotSatisfiable {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", size))
+		w.WriteHeader(status)
+		return
+	}
+	w.Header().Set("Content-Length", fmt.Sprintf("%v", end-begin+1))
+	if status == http.StatusPartialContent {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %v-%v/%v", begin, end, size))
+		w.WriteHeader(status)
+	}
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	err = z.Write(r.Context(), &meteredWriter{w: w, c: bytesTotal.WithLabelValues(format)}, begin, end)
+	outcome := archiveOutcome(r.Context(), err)
+	recordArchive(format, outcome, started)
+	if err != nil {
+		// Response is already committed by the Flush above (status + headers
+		// sent, body streaming), so we can't change the status code here —
+		// a WriteHeader call now only logs "superfluous response.WriteHeader".
+		// A client that hung up is the common case (most aborted
+		// downloads) and no fault of ours, so it is not an error-level
+		// event; the metric carries the split.
+		entry := log.WithError(err).WithField("outcome", outcome)
+		if outcome == outcomeClientGone {
+			entry.Info("failed to write archive")
+		} else {
+			entry.Error("failed to write archive")
+		}
+		return
+	}
 }
 
 func (s *Web) Close() {

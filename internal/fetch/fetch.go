@@ -13,6 +13,17 @@ import (
 	"github.com/pkg/errors"
 )
 
+// Error marks a failure that came from upstream — the GET itself, its
+// status, or a read of its body — so the archiver can tell a proxy/swarm
+// problem apart from its own faults and from the client hanging up.
+// io.EOF is never wrapped: it is the normal end of a body, not a failure.
+type Error struct {
+	Err error
+}
+
+func (e *Error) Error() string { return e.Err.Error() }
+func (e *Error) Unwrap() error { return e.Err }
+
 // Fetcher opens [begin, end) of url. end == -1 means "to the end of the
 // file"; begin == 0 && end == -1 is the whole file. The caller closes the
 // returned body.
@@ -43,13 +54,27 @@ func (h HTTP) Fetch(ctx context.Context, url string, begin, end int64) (io.ReadC
 	}
 	res, err := cl.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, &Error{Err: err}
 	}
 	if res.StatusCode >= 300 {
 		_ = res.Body.Close()
-		return nil, errors.Errorf("got bad http code from url=%v code=%v", url, res.StatusCode)
+		return nil, &Error{Err: errors.Errorf("got bad http code from url=%v code=%v", url, res.StatusCode)}
 	}
-	return res.Body, nil
+	return body{res.Body}, nil
+}
+
+// body tags read failures as upstream's: io.Copy into the client returns
+// read and write errors alike, and only the type tells them apart.
+type body struct {
+	io.ReadCloser
+}
+
+func (b body) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil && err != io.EOF {
+		err = &Error{Err: err}
+	}
+	return n, err
 }
 
 // Whole reports whether the window denotes the entire file of the given

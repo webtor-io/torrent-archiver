@@ -16,10 +16,17 @@ type Archive interface {
 	Write(ctx context.Context, w io.Writer, start int64, end int64) error
 }
 
+// fileSource is what the handler needs from the torrent store: the file
+// list of a torrent. An interface so handler tests can hand in a fixed
+// list instead of standing up the gRPC store.
+type fileSource interface {
+	Get(infoHash string) ([]file, error)
+}
+
 // generateFileList returns the torrent's files under path, in torrent order.
 // A non-empty selected list additionally narrows the result to files that
 // exactly match a selected path or lie under a selected directory path.
-func generateFileList(ts *TorrentStore, infoHash string, path string, selected []string) ([]file, error) {
+func generateFileList(ts fileSource, infoHash string, path string, selected []string) ([]file, error) {
 	files, err := ts.Get(infoHash)
 	if err != nil {
 		return nil, err
