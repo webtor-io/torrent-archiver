@@ -17,6 +17,7 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
+	cs "github.com/webtor-io/common-services"
 )
 
 type Web struct {
@@ -30,6 +31,9 @@ type Web struct {
 	cl              *http.Client
 	crcs            *CRCStore
 	prefetch        PrefetchConfig
+	// gs drains in-flight requests on Close, up to WEB_SHUTDOWN_TIMEOUT,
+	// instead of dropping them with the listener.
+	gs *cs.GracefulServer
 }
 
 const (
@@ -51,6 +55,7 @@ func NewWeb(c *cli.Context, ts *TorrentStore, cl *http.Client, crcs *CRCStore) *
 		apiSecret:       c.String(apiSecretFlag),
 		torrentProxyUrl: c.String(torrentProxyUrlFlag),
 		prefetch:        PrefetchConfigFromCLI(c),
+		gs:              cs.NewGracefulServer(cs.ShutdownTimeout(c)),
 	}
 }
 
@@ -178,17 +183,29 @@ func archiveFormat(name string) string {
 	return formatZip
 }
 
-func (s *Web) Serve() error {
+// Listen binds the web port. It runs before any servable starts: the probe
+// answers Ready as soon as it listens, and a pod must not read Ready with
+// its web port unbound.
+func (s *Web) Listen() error {
 	addr := fmt.Sprintf("%s:%d", s.host, s.port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return errors.Wrap(err, "failed to web listen to tcp connection")
 	}
 	s.ln = ln
+	return nil
+}
+
+func (s *Web) Serve() error {
+	if s.ln == nil {
+		if err := s.Listen(); err != nil {
+			return err
+		}
+	}
 	mux := http.NewServeMux()
 	mux.Handle("/", s)
-	log.Infof("serving Web at %v", addr)
-	return http.Serve(ln, mux)
+	log.Infof("serving Web at %v", s.ln.Addr())
+	return s.gs.Serve(&http.Server{Handler: mux}, s.ln)
 }
 
 // ServeHTTP is the archive endpoint. It is a method rather than a closure
@@ -343,7 +360,17 @@ func (s *Web) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Close drains in-flight archive downloads (up to WEB_SHUTDOWN_TIMEOUT)
+// instead of cutting them with the listener: an archive is one long
+// response, and a pod that exits mid-stream leaves the client with a broken
+// download. Clients that get cut at the deadline resume with a Range
+// request. Close must run before the torrent-store and Redis clients the
+// handlers use are closed.
 func (s *Web) Close() {
+	if s.gs != nil {
+		s.gs.Close()
+		return
+	}
 	if s.ln != nil {
 		_ = s.ln.Close()
 	}

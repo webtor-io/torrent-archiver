@@ -21,6 +21,7 @@ func configure(app *cli.App) {
 	app.Flags = s.RegisterCRCStoreFlags(app.Flags)
 	app.Flags = s.RegisterPrefetchFlags(app.Flags)
 	app.Flags = cs.RegisterRedisClientFlags(app.Flags)
+	app.Flags = cs.RegisterShutdownFlags(app.Flags)
 	app.Action = run
 }
 
@@ -83,14 +84,24 @@ func run(c *cli.Context) error {
 
 	// Setting WebService
 	web := s.NewWeb(c, torrentStore, httpClient, crcStore)
+	// Bound before any servable starts (see Web.Listen).
+	if err := web.Listen(); err != nil {
+		return err
+	}
 	services = append(services, web)
-	defer web.Close()
 
 	// Setting ServeService
 	serve := cs.NewServe(services...)
 
 	// And SERVE!
 	err := serve.Serve()
+
+	// Drain here, not in a defer: in-flight archives still read from the
+	// torrent store and write CRCs to Redis, whose clients the defers above
+	// close as soon as run returns. A defer would also hold a panic for the
+	// whole shutdown timeout.
+	web.Close()
+
 	if err != nil {
 		log.WithError(err).Error("got server error")
 	}
