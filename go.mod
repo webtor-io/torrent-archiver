@@ -11,7 +11,7 @@ require (
 	github.com/redis/go-redis/v9 v9.16.0
 	github.com/sirupsen/logrus v1.9.3
 	github.com/urfave/cli v1.22.17
-	github.com/webtor-io/common-services v0.0.0-20260924165121-39d5e0fb95a0
+	github.com/webtor-io/common-services v0.0.0-20260925142105-6ffe7f0e19ed
 	github.com/webtor-io/lazymap v0.0.0-20250308124910-3a61e0f78108
 	github.com/webtor-io/torrent-store v1.0.0
 	google.golang.org/grpc v1.74.2
