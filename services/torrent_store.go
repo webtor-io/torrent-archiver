@@ -51,11 +51,19 @@ func getPath(info *metainfo.Info, f *metainfo.FileInfo) []string {
 	if info.NameUtf8 != "" {
 		name = info.NameUtf8
 	}
-	res := []string{name}
+	p := f.Path
 	if len(f.PathUtf8) > 0 {
-		res = append(res, f.PathUtf8...)
-	} else if len(f.Path) > 0 {
-		res = append(res, f.Path...)
+		p = f.PathUtf8
+	}
+	// An empty component (["Name", "", "file"], against BEP 3 but such
+	// torrents circulate) would make "Name//file": rest-api lists the file
+	// without it, and the seeder answers "//" with a redirect to the cleaned
+	// path, so drop it here too.
+	res := []string{}
+	for _, c := range append([]string{name}, p...) {
+		if c != "" {
+			res = append(res, c)
+		}
 	}
 	return res
 }
