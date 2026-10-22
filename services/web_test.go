@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
@@ -373,5 +374,40 @@ func TestHandler_TruncatedUpstreamBodyIsUpstreamError(t *testing.T) {
 	// The GET itself succeeded; only the body was short.
 	if got := before.fetchDelta(t, fetchOK); got != 1 {
 		t.Errorf("file_fetches_total{ok}: delta %v, want 1", got)
+	}
+}
+
+// Prefetching must engage through the handler — the URLs the writers fetch
+// are the ones the prefetcher locates — and must not change a byte of
+// either format, whole or in a Range window.
+func TestHandler_PrefetchEngagesAndKeepsBytes(t *testing.T) {
+	names := []string{"a-700", "b-40", "c-9000", "d-3", "e-1200", "f-300"}
+	on := PrefetchConfig{Depth: 3, MaxFile: 2000, Budget: 1 << 20}
+	for _, format := range []string{formatZip, formatTar} {
+		t.Run(format, func(t *testing.T) {
+			u := newUpstream(20 * time.Millisecond)
+			defer u.srv.Close()
+			get := func(cfg PrefetchConfig, rng string) []byte {
+				web := newTestWeb(u, filesNamed(names...))
+				web.prefetch = cfg
+				r := archiveRequest(context.Background(), "x."+format)
+				if rng != "" {
+					r.Header.Set("Range", rng)
+				}
+				rec := httptest.NewRecorder()
+				web.ServeHTTP(rec, r)
+				return rec.Body.Bytes()
+			}
+			for _, rng := range []string{"", "bytes=600-1900", "bytes=5000-"} {
+				want := get(PrefetchConfig{}, rng)
+				u.maxSeen.Store(0)
+				if got := get(on, rng); !bytes.Equal(got, want) {
+					t.Fatalf("range %q: prefetched archive differs (%d vs %d bytes)", rng, len(got), len(want))
+				}
+				if rng == "" && u.maxSeen.Load() < 2 {
+					t.Errorf("prefetch never engaged: at most %d upstream request at a time", u.maxSeen.Load())
+				}
+			}
+		})
 	}
 }

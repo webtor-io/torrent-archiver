@@ -178,3 +178,25 @@ func Test5GBZipping(t *testing.T) {
 		}
 	}
 }
+
+// The writer keeps every entry until Close for the central directory; the
+// URL, which carries the user's token, must not stay with it — at a few
+// hundred bytes per file it dominated memory of large-torrent requests.
+func TestWriteDropsURLAfterEntry(t *testing.T) {
+	s := runServer()
+	defer s.Close()
+	var buf bytes.Buffer
+	// The window covers the first file only: one entry is fetched, the
+	// other is skipped, and neither may keep its URL.
+	zw := ziphttp.NewWriter(&buf, 0, 40, s.Client(), nil)
+	for _, d := range data {
+		h := &ziphttp.FileHeader{Name: d, URL: s.URL + "/" + d, UncompressedSize64: uint64(len(d))}
+		if err := zw.CreateHeader(context.Background(), h); err != nil {
+			t.Fatal(err)
+		}
+		if h.URL != "" {
+			t.Errorf("%s: entry still holds its URL after CreateHeader", d)
+		}
+	}
+	_ = zw.Close()
+}

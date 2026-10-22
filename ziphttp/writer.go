@@ -404,6 +404,10 @@ func (w *Writer) CreateHeader(ctx context.Context, fh *FileHeader) error {
 			}
 		}
 	}
+	// w.dir keeps every entry until Close for the central directory, which
+	// does not need the URL; it carries the user's token and would cost a
+	// few hundred bytes per file for the whole request.
+	h.URL = ""
 	w.current += int64(h.UncompressedSize64)
 	if fh.hasDataDescriptor() {
 		err := w.writeDescriptor(fh, fw)

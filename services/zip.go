@@ -61,6 +61,10 @@ func NewZip(cl *http.Client, files []file, infoHash string, path string, baseURL
 	}
 }
 
+func (s *Zip) url(path string) string {
+	return fileURL(s.baseURL, s.infoHash, path, s.suffix, s.token, s.apiKey)
+}
+
 func (s *Zip) folderHeader(name string, modified time.Time) *ziphttp.FileHeader {
 	return &ziphttp.FileHeader{
 		Name:     name,
@@ -81,7 +85,7 @@ func (s *Zip) writeFile(ctx context.Context, zw *ziphttp.Writer, f file, fw *fol
 	log.Debugf("adding file=%s", f.path)
 	fh := &ziphttp.FileHeader{
 		Name:               strings.TrimPrefix(f.path, s.path+"/"),
-		URL:                fileURL(s.baseURL, s.infoHash, f.path, s.suffix, s.token, s.apiKey),
+		URL:                s.url(f.path),
 		UncompressedSize64: f.size,
 		Modified:           f.modified,
 		CRCKey:             f.path,
@@ -147,7 +151,7 @@ func (s *Zip) Write(ctx context.Context, w io.Writer, start int64, end int64) er
 		}
 	}
 	zw := ziphttp.NewWriter(w, start, end, s.cl, resumer)
-	zw.SetFetcher(newFetcher(fetch.HTTP{Client: s.cl}, s.prefetch, planFor(s.files, s.baseURL, s.infoHash, s.suffix, s.token, s.apiKey)))
+	zw.SetFetcher(newFetcher(fetch.HTTP{Client: s.cl}, s.prefetch, s.files, s.url))
 	defer func(zw *ziphttp.Writer) {
 		_ = zw.Close()
 	}(zw)

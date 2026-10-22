@@ -58,9 +58,13 @@ func (s *Tar) header(f file, withURL bool) *tarhttp.FileHeader {
 		Modified: f.modified,
 	}
 	if withURL {
-		fh.URL = fileURL(s.baseURL, s.infoHash, f.path, s.suffix, s.token, s.apiKey)
+		fh.URL = s.url(f.path)
 	}
 	return fh
+}
+
+func (s *Tar) url(path string) string {
+	return fileURL(s.baseURL, s.infoHash, path, s.suffix, s.token, s.apiKey)
 }
 
 // write runs the shared folder walk + per-file emission; withURL toggles
@@ -103,7 +107,7 @@ func (s *Tar) Size(ctx context.Context) (int64, error) {
 
 func (s *Tar) Write(ctx context.Context, w io.Writer, start int64, end int64) error {
 	tw := tarhttp.NewWriter(w, start, end, s.cl)
-	tw.SetFetcher(newFetcher(fetch.HTTP{Client: s.cl}, s.prefetch, planFor(s.files, s.baseURL, s.infoHash, s.suffix, s.token, s.apiKey)))
+	tw.SetFetcher(newFetcher(fetch.HTTP{Client: s.cl}, s.prefetch, s.files, s.url))
 	log.Infof("start building tar archive for path=%s infoHash=%s", s.path, s.infoHash)
 	if _, err := s.write(ctx, tw, true); err != nil {
 		return err

@@ -161,9 +161,9 @@ func (m meteredFetcher) Fetch(ctx context.Context, url string, begin, end int64)
 
 // newFetcher builds the fetcher chain a writer streams through: metered
 // HTTP at the bottom, the per-request prefetcher on top when enabled.
-func newFetcher(base fetch.Fetcher, cfg PrefetchConfig, plan []planned) fetch.Fetcher {
+func newFetcher(base fetch.Fetcher, cfg PrefetchConfig, files []file, url func(path string) string) fetch.Fetcher {
 	var f fetch.Fetcher = meteredFetcher{base: base}
-	if pf := NewPrefetcher(f, cfg, plan); pf != nil {
+	if pf := NewPrefetcher(f, cfg, files, url); pf != nil {
 		f = pf
 	}
 	return f
