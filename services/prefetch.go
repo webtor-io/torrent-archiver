@@ -219,7 +219,7 @@ func (p *Prefetcher) run(ctx context.Context, url string, e *prefetched) {
 	}
 	if int64(len(buf)) != e.size {
 		e.err = io.ErrUnexpectedEOF
-		log.WithField("url", redactURL(url)).WithField("want", e.size).WithField("got", len(buf)).Warn("prefetch: short body, will fetch live")
+		log.WithField("url", fetch.Redact(url)).WithField("want", e.size).WithField("got", len(buf)).Warn("prefetch: short body, will fetch live")
 		return
 	}
 	e.buf = buf
@@ -262,14 +262,4 @@ func readAllInto(buf []byte, r io.Reader) ([]byte, error) {
 			return buf, err
 		}
 	}
-}
-
-// redactURL drops the query string — it carries the user's token.
-func redactURL(u string) string {
-	for i := 0; i < len(u); i++ {
-		if u[i] == '?' {
-			return u[:i]
-		}
-	}
-	return u
 }

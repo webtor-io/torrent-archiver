@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
+	"strings"
 
 	"github.com/pkg/errors"
 )
@@ -54,11 +56,17 @@ func (h HTTP) Fetch(ctx context.Context, url string, begin, end int64) (io.ReadC
 	}
 	res, err := cl.Do(req)
 	if err != nil {
+		// *url.Error quotes the whole URL, and the archiver logs every
+		// failed fetch, client hang-ups included.
+		var ue *neturl.Error
+		if errors.As(err, &ue) {
+			ue.URL = Redact(ue.URL)
+		}
 		return nil, &Error{Err: err}
 	}
 	if res.StatusCode >= 300 {
 		_ = res.Body.Close()
-		return nil, &Error{Err: errors.Errorf("got bad http code from url=%v code=%v", url, res.StatusCode)}
+		return nil, &Error{Err: errors.Errorf("got bad http code from url=%v code=%v", Redact(url), res.StatusCode)}
 	}
 	return body{res.Body}, nil
 }
@@ -75,6 +83,13 @@ func (b body) Read(p []byte) (int, error) {
 		err = &Error{Err: err}
 	}
 	return n, err
+}
+
+// Redact drops the query string: it carries the user's token and the API
+// key, neither of which belongs in a log line.
+func Redact(url string) string {
+	url, _, _ = strings.Cut(url, "?")
+	return url
 }
 
 // Whole reports whether the window denotes the entire file of the given
