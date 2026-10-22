@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dgrijalva/jwt-go"
+	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"

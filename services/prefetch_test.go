@@ -105,7 +105,7 @@ func TestPrefetcher_ServesBufferedBodiesInOrder(t *testing.T) {
 	for i, f := range files {
 		got := fetchAll(t, p, ctx, u.url(f.path), 0, -1)
 		if len(got) != int(f.size) || got[0] != byte('a'+i) {
-			t.Fatalf("file %d: got %d bytes of %q, want %d of %q", i, len(got), got[:1], f.size, 'a'+i)
+			t.Fatalf("file %d: got %d bytes of %q, want %d of %q", i, len(got), got[:1], f.size, rune('a'+i))
 		}
 	}
 	// Every file was fetched from upstream exactly once: the buffered body
