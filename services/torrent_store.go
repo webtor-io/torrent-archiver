@@ -14,7 +14,7 @@ import (
 )
 
 type TorrentStore struct {
-	lazymap.LazyMap[[]file]
+	*lazymap.LazyMap[[]file]
 	ts *TorrentStoreClient
 }
 
@@ -73,7 +73,9 @@ func (s *TorrentStore) get(ctx context.Context, h string) ([]file, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to get torrent store client")
 	}
-	r, err := c.Pull(ctx, &ts.PullRequest{InfoHash: h})
+	// Internal: this file list is cached by infohash and shared by every
+	// caller, and thp has already decided access to the hash (decision 34).
+	r, err := c.Pull(ctx, &ts.PullRequest{InfoHash: h, Caller: &ts.Caller{Internal: true}})
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to pull torrent from the torrent store")
 	}
