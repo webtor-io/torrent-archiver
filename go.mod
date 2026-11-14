@@ -12,8 +12,9 @@ require (
 	github.com/sirupsen/logrus v1.9.3
 	github.com/urfave/cli v1.22.17
 	github.com/webtor-io/common-services v0.0.0-20261023042905-2ca447be4f69
-	github.com/webtor-io/lazymap v0.0.0-20250308124910-3a61e0f78108
-	github.com/webtor-io/torrent-store v1.0.0
+	github.com/webtor-io/lazymap v0.0.0-20261021184726-55fd9cba3e7a
+	github.com/webtor-io/torrent-store v1.1.0
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800
 	google.golang.org/grpc v1.84.0
 )
 
@@ -25,6 +26,7 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
+	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/go-pg/migrations/v8 v8.1.0 // indirect
 	github.com/go-pg/pg/v10 v10.15.0 // indirect
@@ -44,6 +46,7 @@ require (
 	github.com/nats-io/nkeys v0.4.11 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/nxadm/tail v1.4.8 // indirect
+	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/prometheus/common v0.67.2 // indirect
 	github.com/prometheus/procfs v0.19.2 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
@@ -59,7 +62,6 @@ require (
 	golang.org/x/net v0.61.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260706201446-f0a921348800 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 	mellium.im/sasl v0.3.2 // indirect
