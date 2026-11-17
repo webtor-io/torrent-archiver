@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -300,6 +301,91 @@ func TestHandler_ClientGoneIsNotAnError(t *testing.T) {
 	if got := before.fetchDelta(t, fetchCanceled); got != 1 {
 		t.Errorf("file_fetches_total{canceled}: delta %v, want 1", got)
 	}
+}
+
+// HEAD must carry exactly the headers GET does — download managers probe
+// with HEAD and then resume with Range against its Content-Length — and
+// must not read a single file body. A real server is used, not a recorder:
+// net/http silently eats body writes on HEAD, which is what hid the bug.
+func TestHandler_HeadMatchesGetWithoutReadingFiles(t *testing.T) {
+	for _, format := range []string{formatZip, formatTar} {
+		for _, rng := range []string{"", "bytes=10-600", "bytes=100-", "bytes=99999-"} {
+			t.Run(format+" "+rng, func(t *testing.T) {
+				u := newUpstream(0)
+				defer u.srv.Close()
+				web := newTestWeb(u, filesNamed("a-100", "b-50"))
+				do := func(method string) (*http.Response, []byte) {
+					srv := httptest.NewServer(web)
+					// Close waits for the handler to return, so the counts
+					// below include work done after the headers went out.
+					defer srv.Close()
+					req, _ := http.NewRequest(method, srv.URL+"/x."+format, nil)
+					req.Header.Set("X-Info-Hash", "deadbeef")
+					if rng != "" {
+						req.Header.Set("Range", rng)
+					}
+					res, err := srv.Client().Do(req)
+					if err != nil {
+						t.Fatalf("%s: %v", method, err)
+					}
+					body, _ := io.ReadAll(res.Body)
+					_ = res.Body.Close()
+					return res, body
+				}
+
+				get, body := do(http.MethodGet)
+				getHits := u.totalHits()
+				if get.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+					if cl, _ := strconv.Atoi(get.Header.Get("Content-Length")); cl != len(body) {
+						t.Fatalf("GET Content-Length %d, body %d", cl, len(body))
+					}
+					if getHits == 0 {
+						t.Fatal("GET read nothing upstream: the fixture is not exercised")
+					}
+				}
+
+				before := snapshot(t)
+				head, _ := do(http.MethodHead)
+				if got := u.totalHits() - getHits; got != 0 {
+					t.Errorf("HEAD made %d upstream requests, want 0", got)
+				}
+				if head.StatusCode != get.StatusCode {
+					t.Errorf("HEAD status %d, GET %d", head.StatusCode, get.StatusCode)
+				}
+				// net/http adds Content-Length: 0 to the empty GET 416 on its
+				// own and omits it on HEAD; that body length is not the archive's.
+				skip := map[string]bool{"Date": true}
+				if get.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+					skip["Content-Length"] = true
+				}
+				for _, h := range []http.Header{get.Header, head.Header} {
+					for k := range h {
+						if !skip[k] && get.Header.Get(k) != head.Header.Get(k) {
+							t.Errorf("%s: GET %q, HEAD %q", k, get.Header.Get(k), head.Header.Get(k))
+						}
+					}
+				}
+				for _, f := range []string{formatZip, formatTar} {
+					for _, o := range []string{outcomeOK, outcomeClientGone, outcomeUpstreamError, outcomeError} {
+						if got := before.archiveDelta(t, f, o); got != 0 {
+							t.Errorf("HEAD moved archives_total{%s,%s} by %v", f, o, got)
+						}
+					}
+				}
+				if got := testutil.ToFloat64(archivesActive); got != 0 {
+					t.Errorf("archives_active after HEAD: %v, want 0", got)
+				}
+			})
+		}
+	}
+}
+
+func (u *upstream) totalHits() (n int32) {
+	u.hits.Range(func(_, c any) bool {
+		n += c.(*atomic.Int32).Load()
+		return true
+	})
+	return n
 }
 
 type failingFiles struct{ err error }

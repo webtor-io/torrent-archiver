@@ -336,6 +336,13 @@ func (s *Web) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %v-%v/%v", begin, end, size))
 		w.WriteHeader(status)
 	}
+	// HEAD stops at the headers. net/http silently discards body writes on
+	// HEAD, so going on would build the whole archive and read every file
+	// from upstream for a client that receives none of it. No archive
+	// outcome either: nothing was downloaded.
+	if r.Method == http.MethodHead {
+		return
+	}
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
