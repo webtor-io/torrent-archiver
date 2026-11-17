@@ -315,9 +315,16 @@ func TestHandler_HeadMatchesGetWithoutReadingFiles(t *testing.T) {
 				defer u.srv.Close()
 				web := newTestWeb(u, filesNamed("a-100", "b-50"))
 				do := func(method string) (*http.Response, []byte) {
-					srv := httptest.NewServer(web)
-					// Close waits for the handler to return, so the counts
-					// below include work done after the headers went out.
+					// The handler may go on after the client has its
+					// headers. Wait for it to return before srv.Close drops
+					// the connection: that cancels its context, and a HEAD
+					// that builds the archive would stop after however many
+					// fetches it got to by then.
+					done := make(chan struct{})
+					srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						defer close(done)
+						web.ServeHTTP(w, r)
+					}))
 					defer srv.Close()
 					req, _ := http.NewRequest(method, srv.URL+"/x."+format, nil)
 					req.Header.Set("X-Info-Hash", "deadbeef")
@@ -330,6 +337,11 @@ func TestHandler_HeadMatchesGetWithoutReadingFiles(t *testing.T) {
 					}
 					body, _ := io.ReadAll(res.Body)
 					_ = res.Body.Close()
+					select {
+					case <-done:
+					case <-time.After(10 * time.Second):
+						t.Fatalf("%s: handler still running after 10 s", method)
+					}
 					return res, body
 				}
 
@@ -346,6 +358,14 @@ func TestHandler_HeadMatchesGetWithoutReadingFiles(t *testing.T) {
 
 				before := snapshot(t)
 				head, _ := do(http.MethodHead)
+				// Primary: a HEAD records no archive outcome.
+				for _, f := range []string{formatZip, formatTar} {
+					for _, o := range []string{outcomeOK, outcomeClientGone, outcomeUpstreamError, outcomeError} {
+						if got := before.archiveDelta(t, f, o); got != 0 {
+							t.Errorf("HEAD moved archives_total{%s,%s} by %v", f, o, got)
+						}
+					}
+				}
 				if got := u.totalHits() - getHits; got != 0 {
 					t.Errorf("HEAD made %d upstream requests, want 0", got)
 				}
@@ -362,13 +382,6 @@ func TestHandler_HeadMatchesGetWithoutReadingFiles(t *testing.T) {
 					for k := range h {
 						if !skip[k] && get.Header.Get(k) != head.Header.Get(k) {
 							t.Errorf("%s: GET %q, HEAD %q", k, get.Header.Get(k), head.Header.Get(k))
-						}
-					}
-				}
-				for _, f := range []string{formatZip, formatTar} {
-					for _, o := range []string{outcomeOK, outcomeClientGone, outcomeUpstreamError, outcomeError} {
-						if got := before.archiveDelta(t, f, o); got != 0 {
-							t.Errorf("HEAD moved archives_total{%s,%s} by %v", f, o, got)
 						}
 					}
 				}

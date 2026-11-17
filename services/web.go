@@ -269,7 +269,7 @@ func (s *Web) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// for: the gauge spans the store lookup and Size as well, since
 	// the request already holds resources during them. The 404/416
 	// exits below are client-side mistakes, not archive outcomes,
-	// and stay out of archives_total.
+	// and stay out of archives_total; so does a HEAD past Size (headers only).
 	started := time.Now()
 	archivesActive.Inc()
 	defer archivesActive.Dec()
