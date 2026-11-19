@@ -26,7 +26,7 @@ var (
 	archivesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "archiver",
 		Name:      "archives_total",
-		Help: "Archive requests that reached the file list stage, by format and outcome. " +
+		Help: "Archive requests that reached the file list stage, by format and outcome; 404/416 and HEAD answered with headers are not counted. " +
 			"client_gone is the client hanging up mid-download and is not a service error; " +
 			"upstream_error is the proxy/seeder GET failing; error is everything else (torrent store, size).",
 	}, []string{"format", "outcome"})

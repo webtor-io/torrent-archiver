@@ -269,7 +269,7 @@ func (s *Web) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// for: the gauge spans the store lookup and Size as well, since
 	// the request already holds resources during them. The 404/416
 	// exits below are client-side mistakes, not archive outcomes,
-	// and stay out of archives_total.
+	// and stay out of archives_total; so does a HEAD past Size (headers only).
 	started := time.Now()
 	archivesActive.Inc()
 	defer archivesActive.Dec()
@@ -335,6 +335,13 @@ func (s *Web) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if status == http.StatusPartialContent {
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %v-%v/%v", begin, end, size))
 		w.WriteHeader(status)
+	}
+	// HEAD stops at the headers. net/http silently discards body writes on
+	// HEAD, so going on would build the whole archive and read every file
+	// from upstream for a client that receives none of it. No archive
+	// outcome either: nothing was downloaded.
+	if r.Method == http.MethodHead {
+		return
 	}
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
