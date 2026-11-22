@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -26,10 +27,25 @@ var (
 	archivesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "archiver",
 		Name:      "archives_total",
-		Help: "Archive requests that reached the file list stage, by format and outcome; 404/416 and HEAD answered with headers are not counted. " +
+		Help: "Archive requests that reached the file list stage, by format and outcome; 404/416, refusals (archives_refused_total) and HEAD answered with headers are not counted. " +
 			"client_gone is the client hanging up mid-download and is not a service error; " +
 			"upstream_error is the proxy/seeder GET failing; error is everything else (torrent store, size).",
 	}, []string{"format", "outcome"})
+
+	archivesRefused = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "archiver",
+		Name:      "archives_refused_total",
+		Help: "Archive requests answered before the first byte with the status upstream refuses the window's first file with (403/404/451), " +
+			"probed or answered from memory. Not in archives_total: no archive was started.",
+	}, []string{"status"})
+
+	refusalProbes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "archiver",
+		Name:      "refusal_probes_total",
+		Help: "Upstream HEADs asking whether an archive's first read is refused, by outcome; answers from memory are not probes. " +
+			"refused is 403/404/451; error is any other status or failure; timeout is no answer within the probe timeout, which the status line waited out. " +
+			"error and timeout are not kept, so each archive request probes again.",
+	}, []string{"outcome"})
 
 	archivesActive = promauto.NewGauge(prometheus.GaugeOpts{
 		Namespace: "archiver",
@@ -76,6 +92,11 @@ const (
 	fetchCanceled = "canceled"
 	fetchError    = "error"
 
+	probeOK       = "ok"
+	probeRefused  = "refused"
+	probeError    = "error"
+	probeTimedOut = "timeout"
+
 	formatZip = "zip"
 	formatTar = "tar"
 )
@@ -92,6 +113,12 @@ func init() {
 	}
 	for _, o := range []string{fetchOK, fetchCanceled, fetchError} {
 		fileFetchesTotal.WithLabelValues(o)
+	}
+	for _, c := range refusedStatuses {
+		archivesRefused.WithLabelValues(strconv.Itoa(c))
+	}
+	for _, o := range []string{probeOK, probeRefused, probeError, probeTimedOut} {
+		refusalProbes.WithLabelValues(o)
 	}
 }
 

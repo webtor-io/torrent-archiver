@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/url"
 	"strings"
@@ -14,6 +15,35 @@ type Archive interface {
 	ContentType() string
 	Size(ctx context.Context) (int64, error)
 	Write(ctx context.Context, w io.Writer, start int64, end int64) error
+	// firstRead reports the first file content read Write would make for
+	// [start, end] without making it; nil when the window reads no file
+	// content (directory entries, the zip central directory).
+	firstRead(ctx context.Context, start int64, end int64) *firstRead
+}
+
+// firstRead stands in for the fetcher on a dry pass of a writer: it records
+// each read and fails it. The content read's failure ends the pass, so the
+// last read recorded is the window's first content read. A zip CRC gap read
+// of the same file comes before it and is overwritten: Write skips the gap
+// when a checkpoint sits at the window's start, and the content read it
+// always makes.
+type firstRead struct {
+	url        string
+	begin, end int64
+}
+
+var errDryRun = errors.New("dry run: read recorded")
+
+func (f *firstRead) Fetch(_ context.Context, url string, begin, end int64) (io.ReadCloser, error) {
+	f.url, f.begin, f.end = url, begin, end
+	return nil, errDryRun
+}
+
+func (f *firstRead) got() *firstRead {
+	if f.url == "" {
+		return nil
+	}
+	return f
 }
 
 // fileSource is what the handler needs from the torrent store: the file

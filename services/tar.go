@@ -105,6 +105,14 @@ func (s *Tar) Size(ctx context.Context) (int64, error) {
 	return contentSize + int64(buf.Len()), nil
 }
 
+func (s *Tar) firstRead(ctx context.Context, start int64, end int64) *firstRead {
+	fr := &firstRead{}
+	tw := tarhttp.NewWriter(io.Discard, start, end, nil)
+	tw.SetFetcher(fr)
+	_, _ = s.write(ctx, tw, true)
+	return fr.got()
+}
+
 func (s *Tar) Write(ctx context.Context, w io.Writer, start int64, end int64) error {
 	tw := tarhttp.NewWriter(w, start, end, s.cl)
 	tw.SetFetcher(newFetcher(fetch.HTTP{Client: s.cl}, s.prefetch, s.files, s.url))

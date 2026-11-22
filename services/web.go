@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"crypto/sha1"
 	"fmt"
 	"net"
@@ -18,6 +19,9 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 	cs "github.com/webtor-io/common-services"
+	"github.com/webtor-io/lazymap"
+
+	"github.com/webtor-io/torrent-archiver/internal/fetch"
 )
 
 type Web struct {
@@ -31,6 +35,9 @@ type Web struct {
 	cl              *http.Client
 	crcs            *CRCStore
 	prefetch        PrefetchConfig
+	// refusals keeps upstream's answer to the probe of an archive's first
+	// read (see refusal), keyed by that read's URL.
+	refusals *lazymap.LazyMap[int]
 	// gs drains in-flight requests on Close, up to WEB_SHUTDOWN_TIMEOUT,
 	// instead of dropping them with the listener.
 	gs *cs.GracefulServer
@@ -55,6 +62,7 @@ func NewWeb(c *cli.Context, ts *TorrentStore, cl *http.Client, crcs *CRCStore) *
 		apiSecret:       c.String(apiSecretFlag),
 		torrentProxyUrl: c.String(torrentProxyUrlFlag),
 		prefetch:        PrefetchConfigFromCLI(c),
+		refusals:        newRefusals(refusalTTL, refusalCap),
 		gs:              cs.NewGracefulServer(cs.ShutdownTimeout(c)),
 	}
 }
@@ -89,6 +97,91 @@ func RegisterWebFlags(f []cli.Flag) []cli.Flag {
 			EnvVar: "TORRENT_PROXY_URL",
 		},
 	)
+}
+
+const (
+	// refusalTTL is how long a refusal is answered from memory: long
+	// enough to absorb a download manager retrying every range at once,
+	// short enough that a torrent upstream serves again is archived again
+	// within a minute.
+	refusalTTL = time.Minute
+	// refusalCap bounds the memory: one entry per distinct first-read URL
+	// probed within refusalTTL, each holding that URL (token included).
+	refusalCap = 1000
+)
+
+// probeTimeout caps the silence the probe adds before the status line.
+// Past it the archive starts as it did before there was a probe. A var for
+// the test.
+var probeTimeout = 5 * time.Second
+
+// refusedStatuses are upstream answers a retry does not change.
+var refusedStatuses = []int{http.StatusForbidden, http.StatusNotFound, http.StatusUnavailableForLegalReasons}
+
+func newRefusals(ttl time.Duration, capacity int) *lazymap.LazyMap[int] {
+	return lazymap.New[int](&lazymap.Config{
+		Expire:   ttl,
+		Capacity: capacity,
+		// lazymap runs at most Concurrency loads at once, 10 by default:
+		// every archive start would queue behind ten slow probes.
+		Concurrency: capacity,
+	})
+}
+
+// refusal returns the status upstream refuses the window's first read with
+// (refusedStatuses), or 0 to go ahead. The probe's answer is kept for
+// refusalTTL under that read's URL: the token in it is what upstream
+// decides on (a private torrent is refused to one user and served to its
+// owner), and the path keeps a 404 for one file from refusing windows that
+// never read it. Any other failure is neither kept nor a refusal: the
+// archive starts as before, and a transient error stays transient.
+//
+// A HEAD (head) is answered from memory only. Probed on a miss, it would
+// make the seeder load the torrent and keep its readahead for a client that
+// may never GET (a link checker, a size query), where a HEAD otherwise
+// touches no upstream. Its GET is probed anyway; an entry expiring between
+// Status and Get costs one probe.
+func (s *Web) refusal(ctx context.Context, z Archive, begin, end int64, head bool) int {
+	fr := z.firstRead(ctx, begin, end)
+	if fr == nil {
+		return 0
+	}
+	if head {
+		if st, ok := s.refusals.Status(fr.url); !ok || st != lazymap.Done {
+			return 0
+		}
+	}
+	code, _ := s.refusals.Get(fr.url, func() (int, error) { return s.probe(fr) })
+	return code
+}
+
+// probe asks upstream about the read with HEAD: the URL, token and Range
+// of the GET Write would send, answered without a body and without waiting
+// for the swarm. Off the request's context: concurrent requests for the
+// same URL share it, and the one that started it may leave first.
+func (s *Web) probe(fr *firstRead) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	body, err := fetch.HTTP{Client: s.cl, Method: http.MethodHead}.Fetch(ctx, fr.url, fr.begin, fr.end)
+	if err == nil {
+		_ = body.Close()
+		refusalProbes.WithLabelValues(probeOK).Inc()
+		return 0, nil
+	}
+	var fe *fetch.Error
+	if errors.As(err, &fe) && slices.Contains(refusedStatuses, fe.Status) {
+		refusalProbes.WithLabelValues(probeRefused).Inc()
+		log.WithError(err).Info("upstream refuses the archive's first file, refusing the archive")
+		return fe.Status, nil
+	}
+	// ctx is the probe's own: only its timeout ends it.
+	outcome := probeError
+	if ctx.Err() != nil {
+		outcome = probeTimedOut
+	}
+	refusalProbes.WithLabelValues(outcome).Inc()
+	log.WithError(err).WithField("outcome", outcome).Warn("refusal probe failed, starting the archive unprobed")
+	return 0, err
 }
 
 // maxSelectedPaths bounds the ?paths= selection; a checked folder covers
@@ -269,7 +362,8 @@ func (s *Web) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// for: the gauge spans the store lookup and Size as well, since
 	// the request already holds resources during them. The 404/416
 	// exits below are client-side mistakes, not archive outcomes,
-	// and stay out of archives_total; so does a HEAD past Size (headers only).
+	// and stay out of archives_total; so does a HEAD past Size (headers only)
+	// and a refusal, which never started an archive (archives_refused_total).
 	started := time.Now()
 	archivesActive.Inc()
 	defer archivesActive.Dec()
@@ -312,6 +406,18 @@ func (s *Web) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	begin, end, status := parseRange(r.Header.Get("Range"), size)
+
+	// What upstream refuses (a blocked torrent, another user's private
+	// one) is refused here, before the status line. Started as an archive,
+	// it sent 206 and the first entry's header, failed on the first file,
+	// and a download manager retried every range at once.
+	if status != http.StatusRequestedRangeNotSatisfiable {
+		if code := s.refusal(r.Context(), z, begin, end, r.Method == http.MethodHead); code != 0 {
+			archivesRefused.WithLabelValues(strconv.Itoa(code)).Inc()
+			http.Error(w, http.StatusText(code), code)
+			return
+		}
+	}
 
 	w.Header().Set("Content-Type", z.ContentType())
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", name))

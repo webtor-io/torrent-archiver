@@ -30,6 +30,27 @@ connection to the client. Neither mechanism outlives the request: a client
 that disconnects cancels its prefetches; keeping the swarm working across a
 client's retries is torrent-web-seeder's job (`READER_LINGER`).
 
+## Refusals
+
+Before the status line of a GET the archiver asks upstream about the first
+file the requested window would read: a `HEAD` with the same URL, token and
+`Range` as that file's content GET. A `403`, `404` or `451` is passed on
+to the client as is, with a short plain body, and no archive is started;
+started, it would have sent the status and the first entry's header and
+then failed on the first file, and download managers retry such a range at
+once. The answer is kept in memory for 60 s per URL (token included: a
+private torrent is refused to one user and served to another), at most
+1000 entries, so retries are answered without asking upstream again. Any
+other probe failure, or no answer within 5 s, is neither kept nor a
+refusal: the archive starts as before. A window that reads no file content
+(the zip central directory, the tar end marker) is not probed.
+
+On the seeder the probe opens the reader the GET would (loading the torrent
+if needed), so it costs work the GET that follows does anyway. A HEAD from
+the client may never be followed by a GET (link checkers, size queries), so
+it asks upstream nothing: it is refused only from an answer already in
+memory, and otherwise gets the archive's headers as before.
+
 ## Metrics
 
 Prometheus metrics are served on the prom port (`--prom-port`, see
@@ -37,7 +58,9 @@ Prometheus metrics are served on the prom port (`--prom-port`, see
 
 | Metric | Labels | Meaning |
 |---|---|---|
-| `archiver_archives_total` | `format` (zip/tar), `outcome` | One per archive request that reached the file list stage. `ok`, `client_gone` (client hung up — most aborted downloads, not a fault), `upstream_error` (proxy/seeder GET or body failed), `error` (torrent store, size). |
+| `archiver_archives_total` | `format` (zip/tar), `outcome` | One per archive request that reached the file list stage and was not refused. `ok`, `client_gone` (client hung up — most aborted downloads, not a fault), `upstream_error` (proxy/seeder GET or body failed), `error` (torrent store, size). |
+| `archiver_archives_refused_total` | `status` (403/404/451) | Archive requests refused before the first byte (see Refusals), answers from memory included. Not in `archives_total` or `archive_duration_seconds`: no archive was started. |
+| `archiver_refusal_probes_total` | `outcome` (ok/refused/error/timeout) | Upstream HEADs of the refusal probe; answers from memory are not probes. `error` (any other status or failure) and `timeout` (the status line waited the full 5 s) are not kept, so each request probes again; failures are logged at warn with the redacted URL. |
 | `archiver_archives_active` | | Requests in flight; each may hold up to the prefetch budget in memory. |
 | `archiver_bytes_total` | `format` | Bytes written to clients, counted as they leave. |
 | `archiver_archive_duration_seconds` | `format` | Request wall time, all outcomes; the 30 s edge is the download-manager timeout. |
