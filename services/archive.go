@@ -15,27 +15,27 @@ type Archive interface {
 	ContentType() string
 	Size(ctx context.Context) (int64, error)
 	Write(ctx context.Context, w io.Writer, start int64, end int64) error
-	// firstRead reports the first upstream read Write would make for
+	// firstRead reports the first file content read Write would make for
 	// [start, end] without making it; nil when the window reads no file
 	// content (directory entries, the zip central directory).
 	firstRead(ctx context.Context, start int64, end int64) *firstRead
 }
 
 // firstRead stands in for the fetcher on a dry pass of a writer: it records
-// the window's first upstream read and fails it, which ends the pass there.
-// Only the first is kept: zip may read a CRC gap of a file before its
-// content, and both reads are of the same file.
+// each read and fails it. The content read's failure ends the pass, so the
+// last read recorded is the window's first content read. A zip CRC gap read
+// of the same file comes before it and is overwritten: Write skips the gap
+// when a checkpoint sits at the window's start, and the content read it
+// always makes.
 type firstRead struct {
 	url        string
 	begin, end int64
 }
 
-var errDryRun = errors.New("dry run: first read recorded")
+var errDryRun = errors.New("dry run: read recorded")
 
 func (f *firstRead) Fetch(_ context.Context, url string, begin, end int64) (io.ReadCloser, error) {
-	if f.url == "" {
-		f.url, f.begin, f.end = url, begin, end
-	}
+	f.url, f.begin, f.end = url, begin, end
 	return nil, errDryRun
 }
 

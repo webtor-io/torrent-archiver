@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -517,24 +518,25 @@ func TestHandler_PrefetchEngagesAndKeepsBytes(t *testing.T) {
 }
 
 // statusUpstream answers every request with status and no body, counting
-// requests by method and the paths HEADs ask for; HEADs wait headHold first.
+// requests by method and logging each as "METHOD path range"; HEADs wait
+// headHold first.
 type statusUpstream struct {
 	srv         *httptest.Server
 	status      atomic.Int32
 	heads, gets atomic.Int32
 	mu          sync.Mutex
-	headPaths   []string
+	reqs        []string
 }
 
 func newStatusUpstream(status int, headHold time.Duration) *statusUpstream {
 	u := &statusUpstream{}
 	u.status.Store(int32(status))
 	u.srv = httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		u.mu.Lock()
+		u.reqs = append(u.reqs, r.Method+" "+r.URL.Path+" "+r.Header.Get("Range"))
+		u.mu.Unlock()
 		if r.Method == http.MethodHead {
 			u.heads.Add(1)
-			u.mu.Lock()
-			u.headPaths = append(u.headPaths, r.URL.Path)
-			u.mu.Unlock()
 			time.Sleep(headHold)
 		} else {
 			u.gets.Add(1)
@@ -721,7 +723,10 @@ func TestHandler_ProbeFailureKeepsTodaysBehaviour(t *testing.T) {
 }
 
 // The probe asks about the file the window reads first, not the first file
-// of the torrent; a window that reads no content is not probed.
+// of the torrent, with the Range of that file's content GET; a window that
+// reads no content is not probed. Into the 2nd file, zip without a CRC
+// checkpoint first GETs the gap from the file's byte 0: the probe must not
+// ask for it, since with a checkpoint at the window's start Write never does.
 func TestHandler_ProbesTheFileTheWindowReads(t *testing.T) {
 	cases := []struct{ rng, want string }{
 		{"", "/deadbeef/T/a-100"},
@@ -731,14 +736,25 @@ func TestHandler_ProbesTheFileTheWindowReads(t *testing.T) {
 	for _, format := range []string{formatZip, formatTar} {
 		for _, c := range cases {
 			u := newStatusUpstream(http.StatusOK, 0)
-			serve(u.web(filesNamed("T/a-100", "T/b-9000")), http.MethodHead, "x."+format, c.rng, "")
+			serve(u.web(filesNamed("T/a-100", "T/b-9000")), http.MethodGet, "x."+format, c.rng, "")
 			u.srv.Close()
+			var heads []string
+			lastGet := map[string]string{} // path -> its last GET, the content read
+			for _, r := range u.reqs {
+				method, rest, _ := strings.Cut(r, " ")
+				path, _, _ := strings.Cut(rest, " ")
+				if method == http.MethodHead {
+					heads = append(heads, r)
+				} else {
+					lastGet[path] = rest
+				}
+			}
 			var want []string
 			if c.want != "" {
-				want = []string{c.want}
+				want = []string{http.MethodHead + " " + lastGet[c.want]}
 			}
-			if !slices.Equal(u.headPaths, want) {
-				t.Errorf("%s %q: probed %v, want %v", format, c.rng, u.headPaths, want)
+			if !slices.Equal(heads, want) {
+				t.Errorf("%s %q: probed %q, want %q (upstream saw %q)", format, c.rng, heads, want, u.reqs)
 			}
 		}
 	}
