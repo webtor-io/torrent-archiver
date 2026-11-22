@@ -607,25 +607,27 @@ func TestHandler_RefusedBeforeFirstByte(t *testing.T) {
 	}
 }
 
-func TestHandler_HeadIsProbedToo(t *testing.T) {
-	for _, code := range []int{http.StatusForbidden, http.StatusOK} {
-		u := newStatusUpstream(code, 0)
-		srv := httptest.NewServer(u.web(filesNamed("T/a-100")))
-		req, _ := http.NewRequest(http.MethodHead, srv.URL+"/x.tar", nil)
-		req.Header.Set("X-Info-Hash", "deadbeef")
-		res, err := srv.Client().Do(req)
-		if err != nil {
-			t.Fatal(err)
+// A HEAD asks upstream nothing: probing it would make the seeder load the
+// torrent for a client that may never GET. It is refused from an answer a
+// GET's probe left in memory, and reads no file either way.
+func TestHandler_HeadAnsweredFromMemoryOnly(t *testing.T) {
+	u := newStatusUpstream(http.StatusForbidden, 0)
+	defer u.srv.Close()
+	web := u.web(filesNamed("T/a-100"))
+	for i, c := range []struct {
+		method string
+		want   int
+		heads  int32
+	}{
+		{http.MethodHead, http.StatusOK, 0},
+		{http.MethodGet, http.StatusForbidden, 1},
+		{http.MethodHead, http.StatusForbidden, 1},
+	} {
+		if rec := serve(web, c.method, "x.tar", "", ""); rec.Code != c.want {
+			t.Errorf("#%d %s: status %d, want %d", i, c.method, rec.Code, c.want)
 		}
-		_ = res.Body.Close()
-		srv.Close()
-		u.srv.Close()
-		if res.StatusCode != code {
-			t.Errorf("HEAD with upstream %d: status %d", code, res.StatusCode)
-		}
-		// One HEAD upstream, never a GET: HEAD still reads no file.
-		if h, g := u.heads.Load(), u.gets.Load(); h != 1 || g != 0 {
-			t.Errorf("HEAD with upstream %d: upstream got %d HEAD and %d GET, want 1 and 0", code, h, g)
+		if h, g := u.heads.Load(), u.gets.Load(); h != c.heads || g != 0 {
+			t.Errorf("#%d %s: upstream got %d HEAD and %d GET, want %d and 0", i, c.method, h, g, c.heads)
 		}
 	}
 }

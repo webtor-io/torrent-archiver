@@ -135,10 +135,21 @@ func newRefusals(ttl time.Duration, capacity int) *lazymap.LazyMap[int] {
 // owner), and the path keeps a 404 for one file from refusing windows that
 // never read it. Any other failure is neither kept nor a refusal: the
 // archive starts as before, and a transient error stays transient.
-func (s *Web) refusal(ctx context.Context, z Archive, begin, end int64) int {
+//
+// A HEAD (head) is answered from memory only. Probed on a miss, it would
+// make the seeder load the torrent and keep its readahead for a client that
+// may never GET (a link checker, a size query), where a HEAD otherwise
+// touches no upstream. Its GET is probed anyway; an entry expiring between
+// Status and Get costs one probe.
+func (s *Web) refusal(ctx context.Context, z Archive, begin, end int64, head bool) int {
 	fr := z.firstRead(ctx, begin, end)
 	if fr == nil {
 		return 0
+	}
+	if head {
+		if st, ok := s.refusals.Status(fr.url); !ok || st != lazymap.Done {
+			return 0
+		}
 	}
 	code, _ := s.refusals.Get(fr.url, func() (int, error) { return s.probe(fr) })
 	return code
@@ -392,7 +403,7 @@ func (s *Web) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// it sent 206 and the first entry's header, failed on the first file,
 	// and a download manager retried every range at once.
 	if status != http.StatusRequestedRangeNotSatisfiable {
-		if code := s.refusal(r.Context(), z, begin, end); code != 0 {
+		if code := s.refusal(r.Context(), z, begin, end, r.Method == http.MethodHead); code != 0 {
 			archivesRefused.WithLabelValues(strconv.Itoa(code)).Inc()
 			http.Error(w, http.StatusText(code), code)
 			return

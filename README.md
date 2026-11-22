@@ -32,9 +32,9 @@ client's retries is torrent-web-seeder's job (`READER_LINGER`).
 
 ## Refusals
 
-Before the status line of a GET or HEAD the archiver asks upstream about
-the first file the requested window would read: a `HEAD` with the same URL,
-token and `Range` as that file's GET. A `403`, `404` or `451` is passed on
+Before the status line of a GET the archiver asks upstream about the first
+file the requested window would read: a `HEAD` with the same URL, token and
+`Range` as that file's content GET. A `403`, `404` or `451` is passed on
 to the client as is, with a short plain body, and no archive is started;
 started, it would have sent the status and the first entry's header and
 then failed on the first file, and download managers retry such a range at
@@ -44,6 +44,12 @@ private torrent is refused to one user and served to another), at most
 other probe failure, or no answer within 5 s, is neither kept nor a
 refusal: the archive starts as before. A window that reads no file content
 (the zip central directory, the tar end marker) is not probed.
+
+On the seeder the probe opens the reader the GET would (loading the torrent
+if needed), so it costs work the GET that follows does anyway. A HEAD from
+the client may never be followed by a GET (link checkers, size queries), so
+it asks upstream nothing: it is refused only from an answer already in
+memory, and otherwise gets the archive's headers as before.
 
 ## Metrics
 
