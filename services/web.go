@@ -165,13 +165,22 @@ func (s *Web) probe(fr *firstRead) (int, error) {
 	body, err := fetch.HTTP{Client: s.cl, Method: http.MethodHead}.Fetch(ctx, fr.url, fr.begin, fr.end)
 	if err == nil {
 		_ = body.Close()
+		refusalProbes.WithLabelValues(probeOK).Inc()
 		return 0, nil
 	}
 	var fe *fetch.Error
 	if errors.As(err, &fe) && slices.Contains(refusedStatuses, fe.Status) {
+		refusalProbes.WithLabelValues(probeRefused).Inc()
 		log.WithError(err).Info("upstream refuses the archive's first file, refusing the archive")
 		return fe.Status, nil
 	}
+	// ctx is the probe's own: only its timeout ends it.
+	outcome := probeError
+	if ctx.Err() != nil {
+		outcome = probeTimedOut
+	}
+	refusalProbes.WithLabelValues(outcome).Inc()
+	log.WithError(err).WithField("outcome", outcome).Warn("refusal probe failed, starting the archive unprobed")
 	return 0, err
 }
 

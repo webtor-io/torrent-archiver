@@ -570,6 +570,10 @@ func refusedCount(code int) float64 {
 	return testutil.ToFloat64(archivesRefused.WithLabelValues(strconv.Itoa(code)))
 }
 
+func probeCount(outcome string) float64 {
+	return testutil.ToFloat64(refusalProbes.WithLabelValues(outcome))
+}
+
 // A torrent upstream refuses is refused with upstream's status before a
 // single archive byte or header: the incident was 206 + the tar header,
 // then a failure on the first file, then the download manager's retry.
@@ -580,7 +584,7 @@ func TestHandler_RefusedBeforeFirstByte(t *testing.T) {
 				u := newStatusUpstream(code, 0)
 				defer u.srv.Close()
 				before := snapshot(t)
-				refused := refusedCount(code)
+				refused, probed := refusedCount(code), probeCount(probeRefused)
 
 				rec := serve(u.web(filesNamed("T/a-100", "T/b-50")), http.MethodGet, "x."+format, "bytes=0-", "")
 
@@ -600,6 +604,9 @@ func TestHandler_RefusedBeforeFirstByte(t *testing.T) {
 				}
 				if got := refusedCount(code) - refused; got != 1 {
 					t.Errorf("archives_refused_total{%d}: delta %v, want 1", code, got)
+				}
+				if got := probeCount(probeRefused) - probed; got != 1 {
+					t.Errorf("refusal_probes_total{refused}: delta %v, want 1", got)
 				}
 				before.expectNoArchive(t)
 			})
@@ -637,7 +644,7 @@ func TestHandler_RefusalAnsweredFromMemory(t *testing.T) {
 	u := newStatusUpstream(http.StatusForbidden, 0)
 	defer u.srv.Close()
 	web := u.web(filesNamed("T/a-100", "T/b-50"))
-	refused := refusedCount(http.StatusForbidden)
+	refused, probed := refusedCount(http.StatusForbidden), probeCount(probeRefused)
 
 	for _, c := range []struct{ method, rng string }{
 		{http.MethodGet, ""}, {http.MethodGet, "bytes=0-"}, {http.MethodGet, "bytes=10-"}, {http.MethodHead, ""},
@@ -658,6 +665,9 @@ func TestHandler_RefusalAnsweredFromMemory(t *testing.T) {
 	if got := refusedCount(http.StatusForbidden) - refused; got != 5 {
 		t.Errorf("archives_refused_total{403}: delta %v, want 5 (memory answers count)", got)
 	}
+	if got := probeCount(probeRefused) - probed; got != 2 {
+		t.Errorf("refusal_probes_total{refused}: delta %v, want 2 (memory answers are not probes)", got)
+	}
 }
 
 func TestHandler_RefusalExpires(t *testing.T) {
@@ -673,11 +683,15 @@ func TestHandler_RefusalExpires(t *testing.T) {
 	}
 	time.Sleep(150 * time.Millisecond)
 	u.status.Store(http.StatusOK) // upstream serves the torrent again
+	ok := probeCount(probeOK)
 	if rec := serve(web, http.MethodGet, "x.zip", "", ""); rec.Code != http.StatusOK {
 		t.Errorf("after the TTL: status %d, want the archive (200)", rec.Code)
 	}
 	if got := u.heads.Load(); got != 2 {
 		t.Errorf("after the TTL: %d probes, want 2", got)
+	}
+	if got := probeCount(probeOK) - ok; got != 1 {
+		t.Errorf("refusal_probes_total{ok}: delta %v, want 1", got)
 	}
 }
 
@@ -689,6 +703,7 @@ func TestHandler_ProbeFailureKeepsTodaysBehaviour(t *testing.T) {
 		defer u.srv.Close()
 		web := u.web(filesNamed("T/a-100"))
 		refused := refusedCount(http.StatusForbidden) + refusedCount(http.StatusNotFound) + refusedCount(http.StatusUnavailableForLegalReasons)
+		errs, timeouts := probeCount(probeError), probeCount(probeTimedOut)
 		for i := 0; i < 2; i++ {
 			before := snapshot(t)
 			if rec := serve(web, http.MethodGet, "x.zip", "", ""); rec.Code != http.StatusOK {
@@ -702,6 +717,9 @@ func TestHandler_ProbeFailureKeepsTodaysBehaviour(t *testing.T) {
 		if got := refusedCount(http.StatusForbidden) + refusedCount(http.StatusNotFound) + refusedCount(http.StatusUnavailableForLegalReasons) - refused; got != 0 {
 			t.Errorf("archives_refused_total moved by %v on a 5xx", got)
 		}
+		if e, to := probeCount(probeError)-errs, probeCount(probeTimedOut)-timeouts; e != 2 || to != 0 {
+			t.Errorf("refusal_probes_total: error +%v timeout +%v, want +2 and +0", e, to)
+		}
 	})
 	t.Run("timeout", func(t *testing.T) {
 		defer func(d time.Duration) { probeTimeout = d }(probeTimeout)
@@ -710,6 +728,7 @@ func TestHandler_ProbeFailureKeepsTodaysBehaviour(t *testing.T) {
 		u := newStatusUpstream(http.StatusForbidden, time.Second)
 		defer u.srv.Close()
 		web := u.web(filesNamed("T/a-100"))
+		errs, timeouts := probeCount(probeError), probeCount(probeTimedOut)
 		started := time.Now()
 		if rec := serve(web, http.MethodGet, "x.zip", "bytes=0-", ""); rec.Code != http.StatusPartialContent {
 			t.Fatalf("status %d, want 206: a slow probe must not hold the archive", rec.Code)
@@ -720,6 +739,9 @@ func TestHandler_ProbeFailureKeepsTodaysBehaviour(t *testing.T) {
 		serve(web, http.MethodGet, "x.zip", "bytes=0-", "")
 		if got := u.heads.Load(); got != 2 {
 			t.Errorf("%d probes for 2 requests: a timeout was remembered", got)
+		}
+		if e, to := probeCount(probeError)-errs, probeCount(probeTimedOut)-timeouts; e != 0 || to != 2 {
+			t.Errorf("refusal_probes_total: error +%v timeout +%v, want +0 and +2", e, to)
 		}
 	})
 }

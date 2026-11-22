@@ -60,6 +60,7 @@ Prometheus metrics are served on the prom port (`--prom-port`, see
 |---|---|---|
 | `archiver_archives_total` | `format` (zip/tar), `outcome` | One per archive request that reached the file list stage and was not refused. `ok`, `client_gone` (client hung up — most aborted downloads, not a fault), `upstream_error` (proxy/seeder GET or body failed), `error` (torrent store, size). |
 | `archiver_archives_refused_total` | `status` (403/404/451) | Archive requests refused before the first byte (see Refusals), answers from memory included. Not in `archives_total` or `archive_duration_seconds`: no archive was started. |
+| `archiver_refusal_probes_total` | `outcome` (ok/refused/error/timeout) | Upstream HEADs of the refusal probe; answers from memory are not probes. `error` (any other status or failure) and `timeout` (the status line waited the full 5 s) are not kept, so each request probes again; failures are logged at warn with the redacted URL. |
 | `archiver_archives_active` | | Requests in flight; each may hold up to the prefetch budget in memory. |
 | `archiver_bytes_total` | `format` | Bytes written to clients, counted as they leave. |
 | `archiver_archive_duration_seconds` | `format` | Request wall time, all outcomes; the 30 s edge is the download-manager timeout. |

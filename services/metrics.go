@@ -39,6 +39,14 @@ var (
 			"probed or answered from memory. Not in archives_total: no archive was started.",
 	}, []string{"status"})
 
+	refusalProbes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "archiver",
+		Name:      "refusal_probes_total",
+		Help: "Upstream HEADs asking whether an archive's first read is refused, by outcome; answers from memory are not probes. " +
+			"refused is 403/404/451; error is any other status or failure; timeout is no answer within the probe timeout, which the status line waited out. " +
+			"error and timeout are not kept, so each archive request probes again.",
+	}, []string{"outcome"})
+
 	archivesActive = promauto.NewGauge(prometheus.GaugeOpts{
 		Namespace: "archiver",
 		Name:      "archives_active",
@@ -84,6 +92,11 @@ const (
 	fetchCanceled = "canceled"
 	fetchError    = "error"
 
+	probeOK       = "ok"
+	probeRefused  = "refused"
+	probeError    = "error"
+	probeTimedOut = "timeout"
+
 	formatZip = "zip"
 	formatTar = "tar"
 )
@@ -103,6 +116,9 @@ func init() {
 	}
 	for _, c := range refusedStatuses {
 		archivesRefused.WithLabelValues(strconv.Itoa(c))
+	}
+	for _, o := range []string{probeOK, probeRefused, probeError, probeTimedOut} {
+		refusalProbes.WithLabelValues(o)
 	}
 }
 
