@@ -132,6 +132,21 @@ func (s *Zip) Size(ctx context.Context) (size int64, err error) {
 	return
 }
 
+// firstRead walks the entries as Write does, without the CRC store: it
+// only changes which bytes of a file are read, not which file.
+func (s *Zip) firstRead(ctx context.Context, start int64, end int64) *firstRead {
+	fr := &firstRead{}
+	zw := ziphttp.NewWriter(io.Discard, start, end, nil, nil)
+	zw.SetFetcher(fr)
+	fw := newFolderWalker(s.path)
+	for _, f := range s.files {
+		if s.writeFile(ctx, zw, f, fw, nil) != nil {
+			break
+		}
+	}
+	return fr.got()
+}
+
 func (s *Zip) Write(ctx context.Context, w io.Writer, start int64, end int64) error {
 	var resumer ziphttp.CRCResumer
 	preseed := map[string]uint32{}

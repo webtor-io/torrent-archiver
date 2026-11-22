@@ -5,6 +5,7 @@
 package fetch
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io"
@@ -21,6 +22,8 @@ import (
 // io.EOF is never wrapped: it is the normal end of a body, not a failure.
 type Error struct {
 	Err error
+	// Status is upstream's answer when it was a status >= 300, else 0.
+	Status int
 }
 
 func (e *Error) Error() string { return e.Err.Error() }
@@ -36,6 +39,9 @@ type Fetcher interface {
 // HTTP fetches with a plain GET, adding a Range header for partial windows.
 type HTTP struct {
 	Client *http.Client
+	// Method is GET when empty. HEAD asks upstream the same question
+	// without a body; the returned body is then empty.
+	Method string
 }
 
 func (h HTTP) Fetch(ctx context.Context, url string, begin, end int64) (io.ReadCloser, error) {
@@ -43,7 +49,7 @@ func (h HTTP) Fetch(ctx context.Context, url string, begin, end int64) (io.ReadC
 	if cl == nil {
 		cl = http.DefaultClient
 	}
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, cmp.Or(h.Method, http.MethodGet), url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +72,7 @@ func (h HTTP) Fetch(ctx context.Context, url string, begin, end int64) (io.ReadC
 	}
 	if res.StatusCode >= 300 {
 		_ = res.Body.Close()
-		return nil, &Error{Err: errors.Errorf("got bad http code from url=%v code=%v", Redact(url), res.StatusCode)}
+		return nil, &Error{Err: errors.Errorf("got bad http code from url=%v code=%v", Redact(url), res.StatusCode), Status: res.StatusCode}
 	}
 	return body{res.Body}, nil
 }

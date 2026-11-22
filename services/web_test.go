@@ -3,11 +3,15 @@ package services
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -142,6 +146,7 @@ func newTestWeb(u *upstream, files fixedFiles) *Web {
 		apiKey:          "k",
 		apiSecret:       "s",
 		torrentProxyUrl: u.srv.URL,
+		refusals:        newRefusals(refusalTTL, refusalCap),
 	}
 }
 
@@ -508,5 +513,293 @@ func TestHandler_PrefetchEngagesAndKeepsBytes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// statusUpstream answers every request with status and no body, counting
+// requests by method and the paths HEADs ask for; HEADs wait headHold first.
+type statusUpstream struct {
+	srv         *httptest.Server
+	status      atomic.Int32
+	heads, gets atomic.Int32
+	mu          sync.Mutex
+	headPaths   []string
+}
+
+func newStatusUpstream(status int, headHold time.Duration) *statusUpstream {
+	u := &statusUpstream{}
+	u.status.Store(int32(status))
+	u.srv = httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			u.heads.Add(1)
+			u.mu.Lock()
+			u.headPaths = append(u.headPaths, r.URL.Path)
+			u.mu.Unlock()
+			time.Sleep(headHold)
+		} else {
+			u.gets.Add(1)
+		}
+		rw.WriteHeader(int(u.status.Load()))
+	}))
+	return u
+}
+
+func (u *statusUpstream) web(files fixedFiles) *Web {
+	return newTestWeb(&upstream{srv: u.srv}, files)
+}
+
+// serve runs one request through the handler; token "" keeps the
+// handler's own signed token.
+func serve(web *Web, method, name, rng, token string) *httptest.ResponseRecorder {
+	r := archiveRequest(context.Background(), name)
+	r.Method = method
+	if rng != "" {
+		r.Header.Set("Range", rng)
+	}
+	if token != "" {
+		r.Header.Set("X-Token", token)
+	}
+	rec := httptest.NewRecorder()
+	web.ServeHTTP(rec, r)
+	return rec
+}
+
+func refusedCount(code int) float64 {
+	return testutil.ToFloat64(archivesRefused.WithLabelValues(strconv.Itoa(code)))
+}
+
+// A torrent upstream refuses is refused with upstream's status before a
+// single archive byte or header: the incident was 206 + the tar header,
+// then a failure on the first file, then the download manager's retry.
+func TestHandler_RefusedBeforeFirstByte(t *testing.T) {
+	for _, format := range []string{formatZip, formatTar} {
+		for _, code := range refusedStatuses {
+			t.Run(format+" "+strconv.Itoa(code), func(t *testing.T) {
+				u := newStatusUpstream(code, 0)
+				defer u.srv.Close()
+				before := snapshot(t)
+				refused := refusedCount(code)
+
+				rec := serve(u.web(filesNamed("T/a-100", "T/b-50")), http.MethodGet, "x."+format, "bytes=0-", "")
+
+				if rec.Code != code {
+					t.Fatalf("status %d, want %d", rec.Code, code)
+				}
+				if got := rec.Body.String(); got != http.StatusText(code)+"\n" {
+					t.Errorf("body %q, want the plain status text", got)
+				}
+				for _, h := range []string{"Content-Disposition", "Content-Range", "Accept-Ranges", "Etag"} {
+					if v := rec.Header().Get(h); v != "" {
+						t.Errorf("refusal carries the archive's %s: %q", h, v)
+					}
+				}
+				if h, g := u.heads.Load(), u.gets.Load(); h != 1 || g != 0 {
+					t.Errorf("upstream got %d HEAD and %d GET, want one probe and nothing else", h, g)
+				}
+				if got := refusedCount(code) - refused; got != 1 {
+					t.Errorf("archives_refused_total{%d}: delta %v, want 1", code, got)
+				}
+				before.expectNoArchive(t)
+			})
+		}
+	}
+}
+
+func TestHandler_HeadIsProbedToo(t *testing.T) {
+	for _, code := range []int{http.StatusForbidden, http.StatusOK} {
+		u := newStatusUpstream(code, 0)
+		srv := httptest.NewServer(u.web(filesNamed("T/a-100")))
+		req, _ := http.NewRequest(http.MethodHead, srv.URL+"/x.tar", nil)
+		req.Header.Set("X-Info-Hash", "deadbeef")
+		res, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+		srv.Close()
+		u.srv.Close()
+		if res.StatusCode != code {
+			t.Errorf("HEAD with upstream %d: status %d", code, res.StatusCode)
+		}
+		// One HEAD upstream, never a GET: HEAD still reads no file.
+		if h, g := u.heads.Load(), u.gets.Load(); h != 1 || g != 0 {
+			t.Errorf("HEAD with upstream %d: upstream got %d HEAD and %d GET, want 1 and 0", code, h, g)
+		}
+	}
+}
+
+// Retries are answered from memory, per token: upstream decides on it.
+func TestHandler_RefusalAnsweredFromMemory(t *testing.T) {
+	u := newStatusUpstream(http.StatusForbidden, 0)
+	defer u.srv.Close()
+	web := u.web(filesNamed("T/a-100", "T/b-50"))
+	refused := refusedCount(http.StatusForbidden)
+
+	for _, c := range []struct{ method, rng string }{
+		{http.MethodGet, ""}, {http.MethodGet, "bytes=0-"}, {http.MethodGet, "bytes=10-"}, {http.MethodHead, ""},
+	} {
+		if rec := serve(web, c.method, "x.zip", c.rng, ""); rec.Code != http.StatusForbidden {
+			t.Fatalf("%s %q: status %d", c.method, c.rng, rec.Code)
+		}
+	}
+	if got := u.heads.Load(); got != 1 {
+		t.Errorf("4 requests for one read made %d probes, want 1", got)
+	}
+	if rec := serve(web, http.MethodGet, "x.zip", "", "another-user"); rec.Code != http.StatusForbidden {
+		t.Fatalf("other token: status %d", rec.Code)
+	}
+	if got := u.heads.Load(); got != 2 {
+		t.Errorf("another token was answered from memory: %d probes, want 2", got)
+	}
+	if got := refusedCount(http.StatusForbidden) - refused; got != 5 {
+		t.Errorf("archives_refused_total{403}: delta %v, want 5 (memory answers count)", got)
+	}
+}
+
+func TestHandler_RefusalExpires(t *testing.T) {
+	u := newStatusUpstream(http.StatusForbidden, 0)
+	defer u.srv.Close()
+	web := u.web(filesNamed("T/a-100"))
+	web.refusals = newRefusals(50*time.Millisecond, refusalCap)
+
+	serve(web, http.MethodGet, "x.zip", "", "")
+	serve(web, http.MethodGet, "x.zip", "", "")
+	if got := u.heads.Load(); got != 1 {
+		t.Fatalf("within the TTL: %d probes, want 1", got)
+	}
+	time.Sleep(150 * time.Millisecond)
+	u.status.Store(http.StatusOK) // upstream serves the torrent again
+	if rec := serve(web, http.MethodGet, "x.zip", "", ""); rec.Code != http.StatusOK {
+		t.Errorf("after the TTL: status %d, want the archive (200)", rec.Code)
+	}
+	if got := u.heads.Load(); got != 2 {
+		t.Errorf("after the TTL: %d probes, want 2", got)
+	}
+}
+
+// A probe that fails any other way neither refuses nor is remembered: the
+// archive starts as it did before the probe existed.
+func TestHandler_ProbeFailureKeepsTodaysBehaviour(t *testing.T) {
+	t.Run("5xx", func(t *testing.T) {
+		u := newStatusUpstream(http.StatusBadGateway, 0)
+		defer u.srv.Close()
+		web := u.web(filesNamed("T/a-100"))
+		refused := refusedCount(http.StatusForbidden) + refusedCount(http.StatusNotFound) + refusedCount(http.StatusUnavailableForLegalReasons)
+		for i := 0; i < 2; i++ {
+			before := snapshot(t)
+			if rec := serve(web, http.MethodGet, "x.zip", "", ""); rec.Code != http.StatusOK {
+				t.Fatalf("status %d, want 200 (headers committed, body cut)", rec.Code)
+			}
+			before.expectArchives(t, formatZip, outcomeUpstreamError)
+		}
+		if got := u.heads.Load(); got != 2 {
+			t.Errorf("%d probes for 2 requests: a 5xx was remembered", got)
+		}
+		if got := refusedCount(http.StatusForbidden) + refusedCount(http.StatusNotFound) + refusedCount(http.StatusUnavailableForLegalReasons) - refused; got != 0 {
+			t.Errorf("archives_refused_total moved by %v on a 5xx", got)
+		}
+	})
+	t.Run("timeout", func(t *testing.T) {
+		defer func(d time.Duration) { probeTimeout = d }(probeTimeout)
+		probeTimeout = 50 * time.Millisecond
+		// Upstream would refuse, but only after the timeout.
+		u := newStatusUpstream(http.StatusForbidden, time.Second)
+		defer u.srv.Close()
+		web := u.web(filesNamed("T/a-100"))
+		started := time.Now()
+		if rec := serve(web, http.MethodGet, "x.zip", "bytes=0-", ""); rec.Code != http.StatusPartialContent {
+			t.Fatalf("status %d, want 206: a slow probe must not hold the archive", rec.Code)
+		}
+		if d := time.Since(started); d > 900*time.Millisecond {
+			t.Errorf("waited %v for the probe", d)
+		}
+		serve(web, http.MethodGet, "x.zip", "bytes=0-", "")
+		if got := u.heads.Load(); got != 2 {
+			t.Errorf("%d probes for 2 requests: a timeout was remembered", got)
+		}
+	})
+}
+
+// The probe asks about the file the window reads first, not the first file
+// of the torrent; a window that reads no content is not probed.
+func TestHandler_ProbesTheFileTheWindowReads(t *testing.T) {
+	cases := []struct{ rng, want string }{
+		{"", "/deadbeef/T/a-100"},
+		{"bytes=3000-3001", "/deadbeef/T/b-9000"},
+		{"bytes=-20", ""}, // zip end of central directory / tar end marker
+	}
+	for _, format := range []string{formatZip, formatTar} {
+		for _, c := range cases {
+			u := newStatusUpstream(http.StatusOK, 0)
+			serve(u.web(filesNamed("T/a-100", "T/b-9000")), http.MethodHead, "x."+format, c.rng, "")
+			u.srv.Close()
+			var want []string
+			if c.want != "" {
+				want = []string{c.want}
+			}
+			if !slices.Equal(u.headPaths, want) {
+				t.Errorf("%s %q: probed %v, want %v", format, c.rng, u.headPaths, want)
+			}
+		}
+	}
+}
+
+func TestHandler_RefusalMemoryIsBounded(t *testing.T) {
+	u := newStatusUpstream(http.StatusForbidden, 0)
+	defer u.srv.Close()
+	web := u.web(filesNamed("T/a-100"))
+	web.refusals = newRefusals(time.Minute, 10)
+	for i := 0; i < 50; i++ {
+		serve(web, http.MethodGet, "x.zip", "", "token-"+strconv.Itoa(i))
+	}
+	if n := web.refusals.Len(); n > 10 {
+		t.Errorf("%d refusals kept, cap 10", n)
+	}
+}
+
+// Archives upstream serves are byte-for-byte what they were before the
+// probe: these digests were produced by the handler before it existed.
+func TestHandler_OpenArchiveBytesUnchanged(t *testing.T) {
+	names := []string{"T/a-700", "T/d/b-40", "T/d/c-9000", "T/e-0", "T/f-1200", "T/g/h-300"}
+	cases := []struct {
+		format, rng string
+		status      int
+		sha256      string
+	}{
+		{formatZip, "", 200, "5738186b49745c1a6f6eacd2ec7304015b6959bb1f7e995ab3fbccdb9d34ba97"},
+		{formatZip, "bytes=0-0", 206, "5c62e091b8c0565f1bafad0dad5934276143ae2ccef7a5381e8ada5b1a8d26d2"},
+		{formatZip, "bytes=600-1900", 206, "fc0384638b2325b09320cc3518a316bc0ac8b7fc2f425b3d51dcda4e6a921320"},
+		{formatZip, "bytes=5000-", 206, "0f89234d53a274225914c37abf3a2a690c5b8b5c7a41221030b814981f70dca5"},
+		{formatZip, "bytes=-100", 206, "9e3f351d1adcbfc37fdb7068a01546e4ff4a6f9dab684b08baa0c3849f2366b0"},
+		{formatZip, "bytes=10000-10500", 206, "25fd206742ca85e417f0862ec3bcb9fbf427dfbdb69771cf68f47cf635c942b0"},
+		{formatTar, "", 200, "f373fad097c351ba035defc77330cb7db7be67b85d67b84562df8351628c7fa6"},
+		{formatTar, "bytes=0-0", 206, "e632b7095b0bf32c260fa4c539e9fd7b852d0de454e9be26f24d0d6f91d069d3"},
+		{formatTar, "bytes=600-1900", 206, "d06442345e8cdfa7a148197b8437fd3b716d554f65ae109b3536543b771699ab"},
+		{formatTar, "bytes=5000-", 206, "9047a948417ccd365f2d4f6493a5b599d0b2bdc1a5a8e66f235ced335659e7a5"},
+		{formatTar, "bytes=-100", 206, "cd00e292c5970d3c5e2f0ffa5171e555bc46bfc4faddfb4a418b6840b86e79a3"},
+		{formatTar, "bytes=10000-10500", 206, "ab33d36f9367030f0a835bcd92e976231ca9f3a1d2d69c678fc0f828e2dc5539"},
+	}
+	for _, c := range cases {
+		u := newUpstream(0)
+		rec := serve(newTestWeb(u, filesNamed(names...)), http.MethodGet, "x."+c.format, c.rng, "")
+		u.srv.Close()
+		if got := fmt.Sprintf("%x", sha256.Sum256(rec.Body.Bytes())); rec.Code != c.status || got != c.sha256 {
+			t.Errorf("%s %q: status %d sha256 %s, want %d %s", c.format, c.rng, rec.Code, got, c.status, c.sha256)
+		}
+	}
+}
+
+// expectNoArchive asserts no archive outcome or duration was recorded.
+func (c counters) expectNoArchive(t *testing.T) {
+	t.Helper()
+	for _, f := range []string{formatZip, formatTar} {
+		for _, o := range []string{outcomeOK, outcomeClientGone, outcomeUpstreamError, outcomeError} {
+			if got := c.archiveDelta(t, f, o); got != 0 {
+				t.Errorf("archives_total{%s,%s}: delta %v, want 0", f, o, got)
+			}
+		}
+		if got := histogramCount(t, archiveDuration.WithLabelValues(f)) - c.durations[f]; got != 0 {
+			t.Errorf("archive_duration_seconds{%s}: %d new samples, want 0", f, got)
+		}
 	}
 }
