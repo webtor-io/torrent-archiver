@@ -762,6 +762,27 @@ func TestHandler_ProbesTheFileTheWindowReads(t *testing.T) {
 	}
 }
 
+// A Range past the archive's end is answered 416 without a probe:
+// parseRange's fallback window for a 416 is the whole archive, and probing
+// it would turn a blocked torrent's 416 into a 403 and send every 416 of an
+// open one upstream.
+func TestHandler_UnsatisfiableRangeIsNotProbed(t *testing.T) {
+	for _, format := range []string{formatZip, formatTar} {
+		u := newStatusUpstream(http.StatusForbidden, 0)
+		rec := serve(u.web(filesNamed("T/a-100")), http.MethodGet, "x."+format, "bytes=1000000-", "")
+		u.srv.Close()
+		if rec.Code != http.StatusRequestedRangeNotSatisfiable {
+			t.Errorf("%s: status %d, want 416", format, rec.Code)
+		}
+		if cr := rec.Header().Get("Content-Range"); !strings.HasPrefix(cr, "bytes */") {
+			t.Errorf("%s: Content-Range %q, want bytes */<size>", format, cr)
+		}
+		if h, g := u.heads.Load(), u.gets.Load(); h != 0 || g != 0 {
+			t.Errorf("%s: upstream got %d HEAD and %d GET, want none", format, h, g)
+		}
+	}
+}
+
 func TestHandler_RefusalMemoryIsBounded(t *testing.T) {
 	u := newStatusUpstream(http.StatusForbidden, 0)
 	defer u.srv.Close()
